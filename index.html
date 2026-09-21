@@ -60,8 +60,8 @@
   .fab { width: 40px; height: 40px; border-radius: 50%; background: var(--panel); border: 1px solid var(--border);
     color: var(--fg); font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
   .fab.on { background: var(--accent); color: #fff; }
-  #coords { font-size: 11px; color: var(--muted); position: absolute; left: 8px; top: 8px; z-index: 500;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+  #coords { font-size: 22px; font-weight: 700; letter-spacing: 0.02em; color: var(--fg); position: absolute; left: 8px; top: 8px; z-index: 500;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -201,7 +201,8 @@ const TILE_CACHE_NAME = 'map-tiles';
 // tile.openstreetmap.org doesn't send CORS headers, so we can't read
 // tile bytes into JS/IndexedDB directly — Cache Storage sidesteps that
 // the same way a plain <img> tag does.
-const map = L.map('map', { zoomControl: true }).setView([37.6624, -121.8747], 12); // default: Pleasanton, CA
+const map = L.map('map', { zoomControl: false }).setView([37.6624, -121.8747], 12); // default: Pleasanton, CA
+L.control.zoom({ position: 'bottomleft' }).addTo(map);
 const tileLayer = L.tileLayer(TILE_TEMPLATE, {
   maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
 });
