@@ -536,12 +536,25 @@ async function parseGeoPdf(file) {
   renderCanvas.width = pixmap.getWidth();
   renderCanvas.height = pixmap.getHeight();
   const renderCtx = renderCanvas.getContext('2d');
+  // Empirically, MuPDF's pixmap output comes out vertically flipped here
+  // (confirmed against known label positions on a real map) regardless of
+  // which page-transform convention is used to build `matrix` — so the
+  // flip is corrected explicitly here rather than by further guessing at
+  // MuPDF's internal orientation.
+  renderCtx.save();
+  renderCtx.translate(0, renderCanvas.height);
+  renderCtx.scale(1, -1);
   renderCtx.drawImage(fullImg, 0, 0);
+  renderCtx.restore();
   URL.revokeObjectURL(pngUrl);
 
-  // Crop to just the BBox (map) area using the same page->pixel matrix.
+  // Crop to just the BBox (map) area. Apply the same manual Y-flip
+  // correction here, since renderCanvas's content is flipped relative to
+  // what `matrix` alone would predict (see comment above).
   const p0 = applyMatrix(matrix, bbox[0], bbox[1]);
   const p1 = applyMatrix(matrix, bbox[2], bbox[3]);
+  p0[1] = renderCanvas.height - p0[1];
+  p1[1] = renderCanvas.height - p1[1];
   const cropX = Math.min(p0[0], p1[0]), cropY = Math.min(p0[1], p1[1]);
   const cropW = Math.abs(p1[0] - p0[0]), cropH = Math.abs(p1[1] - p0[1]);
   const cropCanvas = document.createElement('canvas');
