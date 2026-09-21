@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>My Location</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2563eb">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #111111; --muted: #666666;
+    --accent: #2563eb; --err: #dc2626; --panel: #f4f4f5; --border: #e2e2e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121212; --fg: #f0f0f0; --muted: #999999;
+      --accent: #60a5fa; --panel: #1e1e1e; --border: #2c2c2c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { padding-top: env(safe-area-inset-top,0px); padding-bottom: env(safe-area-inset-bottom,0px);
+    display: flex; flex-direction: column; overflow: hidden; }
+  header { padding: 8px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+  .tabs { display: flex; gap: 4px; }
+  .tab { background: var(--panel); border: 1px solid var(--border); color: var(--fg);
+    padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #main { position: relative; flex: 1; min-height: 0; }
+  #map { position: absolute; inset: 0; }
+  .panel { position: absolute; left: 8px; right: 8px; bottom: 8px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 13px; z-index: 500; }
+  .panel.hidden { display: none; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  input[type=text], select { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--fg); font-size: 13px; min-width: 100px; }
+  button { background: var(--accent); color: #fff; border: none; padding: 7px 12px; border-radius: 6px;
+    font-size: 13px; cursor: pointer; }
+  button.secondary { background: var(--panel); color: var(--fg); border: 1px solid var(--border); }
+  button:disabled { opacity: 0.5; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .err { color: var(--err); }
+  .overlay { position: absolute; inset: 0; background: var(--bg); z-index: 1000; overflow-y: auto; padding: 10px; }
+  .overlay.hidden { display: none; }
+  .region-item { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+  .region-name { font-weight: 600; font-size: 14px; }
+  .region-meta { font-size: 12px; color: var(--muted); }
+  .region-actions { display: flex; gap: 6px; }
+  .progress-wrap { width: 100%; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin: 6px 0; }
+  .progress-bar { height: 100%; background: var(--accent); width: 0%; }
+  .floating { position: absolute; right: 8px; top: 8px; z-index: 500; display: flex; flex-direction: column; gap: 6px; }
+  .fab { width: 40px; height: 40px; border-radius: 50%; background: var(--panel); border: 1px solid var(--border);
+    color: var(--fg); font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .fab.on { background: var(--accent); color: #fff; }
+  #coords { font-size: 11px; color: var(--muted); position: absolute; left: 8px; top: 8px; z-index: 500;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>My Location</h1>
+  <div class="tabs">
+    <button class="tab active" id="tabCapture">Capture</button>
+    <button class="tab" id="tabOffline">Offline</button>
+  </div>
+</header>
+
+<div id="main">
+  <div id="map"></div>
+  <div id="coords"></div>
+
+  <div class="floating">
+    <div class="fab" id="locateBtn" title="Locate">◎</div>
+    <div class="fab" id="trackBtn" title="Track">➜</div>
+  </div>
+
+  <!-- Capture panel -->
+  <div class="panel" id="capturePanel">
+    <div class="row"><span id="captureStatus" class="muted">Pan/zoom to the area you want, then save it.</span></div>
+    <div class="row">
+      <input type="text" id="regionName" placeholder="Region name (e.g. Pleasanton)">
+    </div>
+    <div class="row">
+      <select id="zoomDepth">
+        <option value="0">Overview only (smallest)</option>
+        <option value="2" selected>Neighborhood detail</option>
+        <option value="4">Street-level detail (largest)</option>
+      </select>
+      <button id="saveRegionBtn">Save this view</button>
+    </div>
+    <div class="row muted" id="estimateRow"></div>
+    <div class="row muted" id="swStatus"></div>
+  </div>
+
+  <!-- Download progress overlay -->
+  <div class="overlay hidden" id="progressOverlay">
+    <h2 style="font-size:15px;">Downloading region…</h2>
+    <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
+    <div class="muted" id="progressText"></div>
+    <div class="row" style="margin-top:10px;"><button class="secondary" id="cancelDownloadBtn">Cancel</button></div>
+  </div>
+
+  <!-- Offline region list overlay -->
+  <div class="overlay hidden" id="regionListOverlay">
+    <div class="row" style="justify-content: space-between;">
+      <h2 style="font-size:15px; margin:0;">Saved regions</h2>
+    </div>
+    <div id="regionList"></div>
+    <div class="muted" id="regionListEmpty" style="display:none;">No regions saved yet. Switch to Capture to download one.</div>
+  </div>
+</div>
+
+<script>
+/* ---------- IndexedDB (region metadata only — tile bytes live in the
+   Service Worker's Cache Storage, see below) ---------- */
+const DB_NAME = 'gpsmapdb2', DB_VERSION = 1; // new name: avoids version-upgrade conflicts with earlier builds
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('regions')) {
+        db.createObjectStore('regions', { keyPath: 'id' });
+      }
+    };
+    req.onblocked = () => reject(new Error('Database upgrade blocked — close other tabs/instances of this app and reload.'));
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+let dbPromise = openDB();
+
+async function dbAddRegion(region) {
+  const db = await dbPromise;
+  return new Promise((res, rej) => {
+    const tx = db.transaction('regions', 'readwrite');
+    tx.objectStore('regions').put(region);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function dbGetRegions() {
+  const db = await dbPromise;
+  return new Promise((res, rej) => {
+    const tx = db.transaction('regions', 'readonly');
+    const req = tx.objectStore('regions').getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbDeleteRegion(id) {
+  const db = await dbPromise;
+  await new Promise((res, rej) => {
+    const tx = db.transaction('regions', 'readwrite');
+    tx.objectStore('regions').delete(id);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+  // Note: this removes the region from the list but leaves its tiles in
+  // the shared tile cache (other regions may reuse them, and there's no
+  // per-tile owner tracking) — harmless, just uses a little extra storage.
+}
+
+/* ---------- Tile math ---------- */
+function lon2tile(lon, z) { return Math.floor((lon + 180) / 360 * Math.pow(2, z)); }
+function lat2tile(lat, z) {
+  const rad = lat * Math.PI / 180;
+  return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z));
+}
+function tilesForBounds(bounds, minZoom, maxZoom) {
+  const tiles = [];
+  for (let z = minZoom; z <= maxZoom; z++) {
+    const xMin = lon2tile(bounds.getWest(), z), xMax = lon2tile(bounds.getEast(), z);
+    const yMin = lat2tile(bounds.getNorth(), z), yMax = lat2tile(bounds.getSouth(), z);
+    for (let x = Math.min(xMin,xMax); x <= Math.max(xMin,xMax); x++) {
+      for (let y = Math.min(yMin,yMax); y <= Math.max(yMin,yMax); y++) {
+        tiles.push({ z, x, y });
+      }
+    }
+  }
+  return tiles;
+}
+const MAX_TILES = 2500;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const TILE_TEMPLATE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+function tileUrl(z,x,y) { return TILE_TEMPLATE.replace('{z}',z).replace('{x}',x).replace('{y}',y); }
+const TILE_CACHE_NAME = 'map-tiles';
+
+/* ---------- Map setup ---------- */
+// One persistent tile layer for both modes. The Service Worker (below)
+// intercepts these requests: online, it fetches + opportunistically
+// caches each tile; offline, it serves from the cache if present.
+// tile.openstreetmap.org doesn't send CORS headers, so we can't read
+// tile bytes into JS/IndexedDB directly — Cache Storage sidesteps that
+// the same way a plain <img> tag does.
+const map = L.map('map', { zoomControl: true }).setView([37.6624, -121.8747], 12); // default: Pleasanton, CA
+const tileLayer = L.tileLayer(TILE_TEMPLATE, {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+});
+tileLayer.addTo(map);
+
+/* ---------- GPS marker ---------- */
+let marker = null, accCircle = null, watchId = null;
+function placeMarker(lat, lng, accuracy) {
+  if (!marker) {
+    marker = L.marker([lat, lng]).addTo(map);
+    accCircle = L.circle([lat, lng], { radius: accuracy || 0, color: '#2563eb', fillOpacity: 0.1 }).addTo(map);
+  } else {
+    marker.setLatLng([lat, lng]);
+    accCircle.setLatLng([lat, lng]).setRadius(accuracy || 0);
+  }
+  document.getElementById('coords').textContent = lat.toFixed(5) + ', ' + lng.toFixed(5);
+}
+document.getElementById('locateBtn').addEventListener('click', () => {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    pos => { placeMarker(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy); map.setView([pos.coords.latitude, pos.coords.longitude]); },
+    err => { document.getElementById('coords').textContent = 'GPS error: ' + err.message; }
+  );
+});
+document.getElementById('trackBtn').addEventListener('click', function() {
+  const btn = this;
+  if (watchId) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    btn.classList.remove('on');
+  } else {
+    watchId = navigator.geolocation.watchPosition(
+      pos => { placeMarker(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy); map.setView([pos.coords.latitude, pos.coords.longitude]); },
+      err => { document.getElementById('coords').textContent = 'GPS error: ' + err.message; },
+      { enableHighAccuracy: true }
+    );
+    btn.classList.add('on');
+  }
+});
+
+/* ---------- Tabs / mode switching ---------- */
+const tabCapture = document.getElementById('tabCapture');
+const tabOffline = document.getElementById('tabOffline');
+const capturePanel = document.getElementById('capturePanel');
+const regionListOverlay = document.getElementById('regionListOverlay');
+
+function setMode(mode) {
+  if (mode === 'capture') {
+    tabCapture.classList.add('active'); tabOffline.classList.remove('active');
+    capturePanel.classList.remove('hidden');
+    regionListOverlay.classList.add('hidden');
+    map.setMinZoom(0);
+    map.setMaxZoom(19);
+    updateEstimate();
+  } else {
+    tabOffline.classList.add('active'); tabCapture.classList.remove('active');
+    capturePanel.classList.add('hidden');
+    renderRegionList();
+    regionListOverlay.classList.remove('hidden');
+  }
+}
+tabCapture.addEventListener('click', () => setMode('capture'));
+tabOffline.addEventListener('click', () => setMode('offline'));
+
+/* ---------- Capture: estimate + save ---------- */
+function updateEstimate() {
+  const depth = parseInt(document.getElementById('zoomDepth').value, 10);
+  const z = map.getZoom();
+  const minZoom = z, maxZoom = Math.min(z + depth, 19);
+  const tiles = tilesForBounds(map.getBounds(), minZoom, maxZoom);
+  const row = document.getElementById('estimateRow');
+  if (tiles.length > MAX_TILES) {
+    row.innerHTML = `<span class="err">${tiles.length} tiles — too many (max ${MAX_TILES}). Zoom in or lower detail.</span>`;
+    document.getElementById('saveRegionBtn').disabled = true;
+  } else {
+    const estMB = (tiles.length * 15 / 1024).toFixed(1); // rough estimate ~15KB/tile
+    row.textContent = `≈ ${tiles.length} tiles, ~${estMB} MB`;
+    document.getElementById('saveRegionBtn').disabled = false;
+  }
+}
+map.on('moveend zoomend', () => { if (!capturePanel.classList.contains('hidden')) updateEstimate(); });
+document.getElementById('zoomDepth').addEventListener('change', updateEstimate);
+updateEstimate();
+
+let downloadCancelled = false;
+document.getElementById('saveRegionBtn').addEventListener('click', async () => {
+  const name = document.getElementById('regionName').value.trim();
+  if (!name) { alert('Give the region a name.'); return; }
+  if (!navigator.onLine) { alert('You appear to be offline — connect to the internet to download a region.'); return; }
+  if (!navigator.serviceWorker.controller) {
+    alert('Offline support is still starting up. Reload the page once, then try downloading again.');
+    return;
+  }
+  const depth = parseInt(document.getElementById('zoomDepth').value, 10);
+  const z = map.getZoom();
+  const minZoom = z, maxZoom = Math.min(z + depth, 19);
+  const bounds = map.getBounds();
+  const tiles = tilesForBounds(bounds, minZoom, maxZoom);
+  if (tiles.length > MAX_TILES) { alert('Too many tiles — zoom in or lower the detail level.'); return; }
+
+  downloadCancelled = false;
+  document.getElementById('progressOverlay').classList.remove('hidden');
+  const bar = document.getElementById('progressBar');
+  const text = document.getElementById('progressText');
+  const regionId = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+  const usageBefore = (navigator.storage && navigator.storage.estimate)
+    ? (await navigator.storage.estimate()).usage : null;
+  let done = 0, failed = 0, lastError = null;
+  const tileCache = await caches.open(TILE_CACHE_NAME);
+
+  for (const t of tiles) {
+    if (downloadCancelled) break;
+    const url = tileUrl(t.z, t.x, t.y);
+    try {
+      // mode: 'no-cors' — the tile server sends no CORS headers, so a
+      // normal fetch() read would be blocked. The response is "opaque"
+      // (we can't inspect it) but it caches and replays fine.
+      const resp = await fetch(url, { mode: 'no-cors' });
+      await tileCache.put(url, resp);
+    } catch (e) { failed++; lastError = e; }
+    done++;
+    bar.style.width = Math.round(done / tiles.length * 100) + '%';
+    text.textContent = `${done} / ${tiles.length} tiles` + (failed ? ` (${failed} failed)` : '');
+    await sleep(60); // polite pacing against the tile server
+  }
+
+  document.getElementById('progressOverlay').classList.add('hidden');
+  if (downloadCancelled) return;
+
+  if (failed === tiles.length) {
+    alert('Every tile failed to download. Error: ' + (lastError ? (lastError.name + ': ' + lastError.message) : 'unknown') +
+      '\n\nCheck you have an internet connection and try again.');
+    return;
+  }
+
+  let sizeBytes = tiles.length * 15 * 1024; // rough fallback estimate
+  if (usageBefore !== null) {
+    const usageAfter = (await navigator.storage.estimate()).usage;
+    if (usageAfter > usageBefore) sizeBytes = usageAfter - usageBefore;
+  }
+  try {
+    await dbAddRegion({
+      id: regionId, name,
+      bounds: { n: bounds.getNorth(), s: bounds.getSouth(), e: bounds.getEast(), w: bounds.getWest() },
+      minZoom, maxZoom, tileCount: tiles.length, sizeBytes, createdAt: Date.now()
+    });
+    document.getElementById('regionName').value = '';
+    alert(`Saved "${name}" (${tiles.length} tiles` + (failed ? `, ${failed} failed` : '') + ').');
+  } catch (e) {
+    alert('Tiles downloaded, but saving the region record failed: ' + e.message);
+  }
+});
+document.getElementById('cancelDownloadBtn').addEventListener('click', () => { downloadCancelled = true; });
+
+/* ---------- Offline: region list ---------- */
+function fmtSize(bytes) {
+  if (bytes > 1024*1024) return (bytes/1024/1024).toFixed(1) + ' MB';
+  return Math.round(bytes/1024) + ' KB';
+}
+async function renderRegionList() {
+  const list = document.getElementById('regionList');
+  const empty = document.getElementById('regionListEmpty');
+  let regions;
+  try {
+    regions = await dbGetRegions();
+  } catch (e) {
+    list.innerHTML = `<div class="err">Couldn't load saved regions: ${e.message}</div>`;
+    empty.style.display = 'none';
+    return;
+  }
+  list.innerHTML = '';
+  empty.style.display = regions.length ? 'none' : 'block';
+  regions.sort((a,b) => b.createdAt - a.createdAt).forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'region-item';
+    item.innerHTML = `
+      <div>
+        <div class="region-name">${r.name}</div>
+        <div class="region-meta">${r.tileCount} tiles · ${fmtSize(r.sizeBytes)} · zoom ${r.minZoom}-${r.maxZoom}</div>
+      </div>
+      <div class="region-actions">
+        <button class="secondary" data-act="open">Open</button>
+        <button class="secondary" data-act="delete">Delete</button>
+      </div>`;
+    item.querySelector('[data-act=open]').addEventListener('click', () => openRegion(r));
+    item.querySelector('[data-act=delete]').addEventListener('click', async () => {
+      if (confirm(`Delete "${r.name}"?`)) { await dbDeleteRegion(r.id); renderRegionList(); }
+    });
+    list.appendChild(item);
+  });
+}
+function openRegion(r) {
+  regionListOverlay.classList.add('hidden');
+  // The tile layer itself doesn't change — the Service Worker serves
+  // cached tiles automatically when the network is unavailable. This
+  // just points the view at the region's cached area/zoom range.
+  map.setMinZoom(r.minZoom);
+  map.setMaxZoom(r.maxZoom);
+  const center = [(r.bounds.n + r.bounds.s) / 2, (r.bounds.e + r.bounds.w) / 2];
+  map.setView(center, r.minZoom);
+}
+
+/* ---------- Init ---------- */
+setMode('capture');
+
+function setSwStatus(text, isErr) {
+  const el = document.getElementById('swStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.className = isErr ? 'row err' : 'row muted';
+}
+if ('serviceWorker' in navigator) {
+  setSwStatus('Offline support: registering…');
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('service-worker.js').then(reg => {
+      if (navigator.serviceWorker.controller) {
+        setSwStatus('Offline support: ready');
+      } else {
+        setSwStatus('Offline support: installed — reload once more to activate it');
+      }
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        nw && nw.addEventListener('statechange', () => {
+          if (nw.state === 'activated') setSwStatus('Offline support: ready');
+        });
+      });
+    }).catch(err => {
+      setSwStatus('Offline support failed to register: ' + err.message, true);
+    });
+  });
+} else {
+  setSwStatus('Offline support: not available in this browser', true);
+}
+</script>
+</body>
+</html>
