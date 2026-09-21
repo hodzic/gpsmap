@@ -488,11 +488,6 @@ async function waitForMupdf() {
   }
 }
 
-function applyMatrix(m, x, y) {
-  // Apply a MuPDF-style 6-element affine matrix [a,b,c,d,e,f] to a point.
-  return [m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5]];
-}
-
 async function parseGeoPdf(file) {
   await waitForMupdf();
   const buf = await file.arrayBuffer();
@@ -564,15 +559,19 @@ async function parseGeoPdf(file) {
   renderCtx.restore();
   URL.revokeObjectURL(pngUrl);
 
-  // Crop to just the BBox (map) area. Apply the same manual Y-flip
-  // correction here, since renderCanvas's content is flipped relative to
-  // what `matrix` alone would predict (see comment above).
-  const p0 = applyMatrix(matrix, bbox[0], bbox[1]);
-  const p1 = applyMatrix(matrix, bbox[2], bbox[3]);
-  p0[1] = renderCanvas.height - p0[1];
-  p1[1] = renderCanvas.height - p1[1];
-  const cropX = Math.min(p0[0], p1[0]), cropY = Math.min(p0[1], p1[1]);
-  const cropW = Math.abs(p1[0] - p0[0]), cropH = Math.abs(p1[1] - p0[1]);
+  // Crop to just the BBox (map) area. Computed as a direct proportion of
+  // the full page within renderCanvas — not re-derived through `matrix` —
+  // since renderCanvas's orientation is now verified correct (right-side
+  // up), and mediaBox/bbox are both in the same PDF-space units, this is a
+  // plain, unambiguous proportional mapping with no sign/flip guesswork.
+  const mediaBoxW = mediaBox[2] - mediaBox[0], mediaBoxH = mediaBox[3] - mediaBox[1];
+  const xFrac0 = (bbox[0] - mediaBox[0]) / mediaBoxW, xFrac1 = (bbox[2] - mediaBox[0]) / mediaBoxW;
+  const yFrac0 = (mediaBox[3] - bbox[3]) / mediaBoxH, yFrac1 = (mediaBox[3] - bbox[1]) / mediaBoxH; // PDF y-up -> row-down
+  const cropX = Math.min(xFrac0, xFrac1) * renderCanvas.width;
+  const cropXEnd = Math.max(xFrac0, xFrac1) * renderCanvas.width;
+  const cropY = Math.min(yFrac0, yFrac1) * renderCanvas.height;
+  const cropYEnd = Math.max(yFrac0, yFrac1) * renderCanvas.height;
+  const cropW = cropXEnd - cropX, cropH = cropYEnd - cropY;
   const cropCanvas = document.createElement('canvas');
   cropCanvas.width = cropW;
   cropCanvas.height = cropH;
@@ -581,18 +580,7 @@ async function parseGeoPdf(file) {
   const imageBlob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/jpeg', 0.85));
   if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
 
-  // Diagnostics: sample a pixel from the full render to confirm real content.
-  let samplePixel = 'n/a';
-  try {
-    const sx = Math.floor(renderCanvas.width / 2), sy = Math.floor(renderCanvas.height / 2);
-    const d = renderCtx.getImageData(sx, sy, 1, 1).data;
-    samplePixel = `rgba(${d[0]},${d[1]},${d[2]},${d[3]}) at (${sx},${sy})`;
-  } catch (e) { samplePixel = 'sample failed: ' + e.message; }
-  const debug = `bbox=[${bbox.map(n=>n.toFixed(1))}] scale=${scale.toFixed(3)} ` +
-    `renderCanvas=${renderCanvas.width}x${renderCanvas.height} crop=${Math.round(cropW)}x${Math.round(cropH)} ` +
-    `centerPixel=${samplePixel}`;
-
-  return { imageBlob, topLeft: topLeftGp, topRight: topRightGp, bottomLeft: bottomLeftGp, debug };
+  return { imageBlob, topLeft: topLeftGp, topRight: topRightGp, bottomLeft: bottomLeftGp };
 }
 
 document.getElementById('addTrailMapBtn').addEventListener('click', () => {
@@ -608,7 +596,6 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
   try {
     const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('Timed out — the PDF may be too large or something went wrong.')), ms));
     const result = await Promise.race([parseGeoPdf(file), timeout(30000)]);
-    alert('Debug info:\n' + result.debug);
     const name = (prompt('Name this trail map:', file.name.replace(/\.pdf$/i, '')) || file.name).trim();
     if (!name) { status.textContent = ''; return; }
     await dbAddTrailMap({
