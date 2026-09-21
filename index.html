@@ -592,18 +592,18 @@ async function renderTrailMapList() {
   maps.sort((a,b) => b.createdAt - a.createdAt).forEach(m => {
     const item = document.createElement('div');
     item.className = 'region-item';
+    const thumbUrl = URL.createObjectURL(m.imageBlob);
     item.innerHTML = `
-      <label style="display:flex; align-items:center; gap:10px; flex:1;">
-        <input type="checkbox" ${activeTrailLayers.has(m.id) ? 'checked' : ''} style="width:20px; height:20px;">
-        <div>
-          <div class="region-name">${m.name}</div>
-          <div class="region-meta">${fmtSize(m.imageBlob.size)}</div>
-        </div>
-      </label>
+      <img src="${thumbUrl}" style="width:48px; height:48px; object-fit:cover; border-radius:6px; border:1px solid var(--border); flex-shrink:0;">
+      <div style="flex:1;">
+        <div class="region-name">${m.name}</div>
+        <div class="region-meta">${fmtSize(m.imageBlob.size)}</div>
+      </div>
       <div class="region-actions">
+        <button class="secondary" data-act="open">Open</button>
         <button class="secondary" data-act="delete">Delete</button>
       </div>`;
-    item.querySelector('input[type=checkbox]').addEventListener('change', (e) => toggleTrailMap(m, e.target.checked));
+    item.querySelector('[data-act=open]').addEventListener('click', () => toggleTrailMap(m, true));
     item.querySelector('[data-act=delete]').addEventListener('click', async () => {
       if (confirm(`Delete "${m.name}"?`)) {
         toggleTrailMap(m, false);
@@ -617,7 +617,7 @@ async function renderTrailMapList() {
 function toggleTrailMap(m, on) {
   if (on && !activeTrailLayers.has(m.id)) {
     const url = URL.createObjectURL(m.imageBlob);
-    const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: 0.75 });
+    const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: 1 });
     layer.addTo(map);
     activeTrailLayers.set(m.id, { layer, url });
     map.fitBounds(layer.getBounds());
