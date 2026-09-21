@@ -153,7 +153,7 @@
 <script>
 /* ---------- IndexedDB (region metadata only — tile bytes live in the
    Service Worker's Cache Storage, see below) ---------- */
-const DB_NAME = 'gpsmapdb2', DB_VERSION = 2; // v2 adds the trailMaps store
+const DB_NAME = 'gpsmapdb3', DB_VERSION = 1; // renamed again: sidesteps version-upgrade blocking from any lingering old connection
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -567,7 +567,8 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
   status.className = 'muted';
   status.textContent = 'Reading PDF…';
   try {
-    const result = await parseGeoPdf(file);
+    const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('Timed out — the PDF may be too large or something went wrong.')), ms));
+    const result = await Promise.race([parseGeoPdf(file), timeout(30000)]);
     const name = (prompt('Name this trail map:', file.name.replace(/\.pdf$/i, '')) || file.name).trim();
     if (!name) { status.textContent = ''; return; }
     await dbAddTrailMap({
