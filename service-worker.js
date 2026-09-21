@@ -1,9 +1,9 @@
-const SHELL_CACHE = 'my-location-shell-v5';
+const SHELL_CACHE = 'my-location-shell-v6';
 const TILE_CACHE = 'map-tiles';
 const SHELL_ASSETS = [
   './', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
-  './vendor/Leaflet.ImageOverlay.Rotated.js', './vendor/pdf-lib.min.js',
-  './vendor/pdf.min.mjs', './vendor/pdf.worker.min.mjs'
+  './vendor/Leaflet.ImageOverlay.Rotated.js',
+  './vendor/mupdf.js', './vendor/mupdf-wasm.js', './vendor/mupdf-wasm.wasm'
 ];
 
 self.addEventListener('install', event => {

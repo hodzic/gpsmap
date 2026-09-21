@@ -12,14 +12,16 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="vendor/Leaflet.ImageOverlay.Rotated.js"></script>
-<script src="vendor/pdf-lib.min.js"></script>
 <script type="module">
-  // pdf.js is only used to render an already-parsed GeoPDF page to an image —
-  // pdf-lib (above) handles reading the geospatial corner points, since
-  // pdf.js's public API doesn't expose raw PDF dictionary entries.
-  import * as pdfjsLib from './vendor/pdf.min.mjs';
-  pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.min.mjs';
-  window.pdfjsLib = pdfjsLib;
+  // MuPDF (WASM) renders GeoPDF trail maps and reads their embedded
+  // geospatial corner points. It fully replaces pdf.js here: pdf.js's
+  // JavaScript JPEG2000 decoder fails silently on real-world GeoPDF
+  // basemaps (common from Esri/ArcGIS exports), rendering them blank.
+  // MuPDF's decoder is the same class as the one Chrome/poppler use and
+  // handles them correctly. It's a much larger download (~10MB) but is
+  // the only reliable option for this without a server round-trip.
+  import * as mupdf from './vendor/mupdf.js';
+  window.mupdf = mupdf;
 </script>
 <style>
   :root {
@@ -472,28 +474,33 @@ function openRegion(r) {
    overlay with Leaflet.ImageOverlay.Rotated (handles the skew/rotation a
    plain L.imageOverlay can't). Everything happens on-device — the PDF
    never leaves the phone. */
-async function waitForPdfjs() {
-  for (let i = 0; i < 50 && !window.pdfjsLib; i++) await sleep(50);
-  if (!window.pdfjsLib) throw new Error('PDF renderer did not load — try reloading the app.');
+async function waitForMupdf() {
+  for (let i = 0; i < 100 && !window.mupdf; i++) await sleep(50);
+  if (!window.mupdf) throw new Error('PDF renderer did not load — try reloading the app.');
+}
+
+function applyMatrix(m, x, y) {
+  // Apply a MuPDF-style 6-element affine matrix [a,b,c,d,e,f] to a point.
+  return [m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5]];
 }
 
 async function parseGeoPdf(file) {
-  await waitForPdfjs();
+  await waitForMupdf();
   const buf = await file.arrayBuffer();
 
-  // 1. Pull the geospatial corner points via pdf-lib's low-level dict access.
-  const pdfDoc = await PDFLib.PDFDocument.load(buf, { ignoreEncryption: true });
-  const page = pdfDoc.getPage(0);
-  const vpArr = page.node.lookup(PDFLib.PDFName.of('VP'));
-  if (!vpArr || vpArr.size() === 0) {
+  const doc = mupdf.Document.openDocument(new Uint8Array(buf), 'application/pdf');
+  const page = doc.loadPage(0);
+  const pageObj = page.getObject();
+
+  // 1. Pull the geospatial corner points from the raw /VP (Viewport) entry.
+  const vp0 = pageObj.get('VP', 0);
+  if (!vp0 || vp0.isNull()) {
     throw new Error('This PDF has no geospatial referencing (no /VP entry) — it isn\'t a GeoPDF/Avenza-style map.');
   }
-  const vp = pdfDoc.context.lookup(vpArr.get(0));
-  const bboxArr = vp.lookup(PDFLib.PDFName.of('BBox'));
-  const bbox = bboxArr.asArray().map(n => n.asNumber()); // [x0,y0,x1,y1] in PDF points
-  const measure = vp.lookup(PDFLib.PDFName.of('Measure'));
-  const gpts = measure.lookup(PDFLib.PDFName.of('GPTS')).asArray().map(n => n.asNumber());
-  const lpts = measure.lookup(PDFLib.PDFName.of('LPTS')).asArray().map(n => n.asNumber());
+  const bbox = vp0.get('BBox').asJS(); // [x0,y0,x1,y1] in PDF points
+  const measure = vp0.get('Measure');
+  const gpts = measure.get('GPTS').asJS();
+  const lpts = measure.get('LPTS').asJS();
   const corners = []; // [{lp:[u,v], gp:[lat,lon]}, ...]
   for (let i = 0; i < lpts.length / 2; i++) {
     corners.push({ lp: [lpts[i*2], lpts[i*2+1]], gp: [gpts[i*2], gpts[i*2+1]] });
@@ -508,29 +515,39 @@ async function parseGeoPdf(file) {
   }
   const topLeftGp = nearest(0, 1), topRightGp = nearest(1, 1), bottomLeftGp = nearest(0, 0);
 
-  // 2. Render the page to a canvas with pdf.js, at a resolution sized to
-  // the map area (BBox), not the full sheet (which may include a legend).
-  const loadingTask = pdfjsLib.getDocument({ data: buf.slice(0) });
-  const pdf = await loadingTask.promise;
-  const pdfjsPage = await pdf.getPage(1);
+  // 2. Render the page with MuPDF at a resolution sized to the map area
+  // (BBox), not the full sheet (which may include a legend).
+  const mediaBox = page.getBounds(); // [x0,y0,x1,y1]
   const bboxWidth = Math.abs(bbox[2] - bbox[0]), bboxHeight = Math.abs(bbox[3] - bbox[1]);
   const targetPx = 2000; // long-side target resolution for the map area
   let scale = targetPx / Math.max(bboxWidth, bboxHeight);
-  const viewport0 = pdfjsPage.getViewport({ scale: 1 });
-  const fullLongSide = Math.max(viewport0.width, viewport0.height) * scale;
+  const fullLongSide = Math.max(mediaBox[2]-mediaBox[0], mediaBox[3]-mediaBox[1]) * scale;
   if (fullLongSide > 4000) scale *= 4000 / fullLongSide; // safety clamp for memory
 
-  const viewport = pdfjsPage.getViewport({ scale });
+  // Manual page-space -> pixel-space matrix (scale + Y-flip), matching how
+  // pdf.js's default viewport transform works, so pixel (0,0) is the page's
+  // top-left corner.
+  const matrix = [scale, 0, 0, -scale, -mediaBox[0]*scale, mediaBox[3]*scale];
+  const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false);
+  const pngBytes = pixmap.asPNG();
+  const pngBlob = new Blob([pngBytes], { type: 'image/png' });
+  const pngUrl = URL.createObjectURL(pngBlob);
+  const fullImg = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to decode the rendered page image.'));
+    img.src = pngUrl;
+  });
   const renderCanvas = document.createElement('canvas');
-  renderCanvas.width = viewport.width;
-  renderCanvas.height = viewport.height;
+  renderCanvas.width = pixmap.getWidth();
+  renderCanvas.height = pixmap.getHeight();
   const renderCtx = renderCanvas.getContext('2d');
-  await pdfjsPage.render({ canvasContext: renderCtx, viewport }).promise;
+  renderCtx.drawImage(fullImg, 0, 0);
+  URL.revokeObjectURL(pngUrl);
 
-  // Crop to just the BBox (map) area using pdf.js's own coordinate transform,
-  // so we don't need to hand-roll the PDF-space-to-pixel math.
-  const p0 = viewport.convertToViewportPoint(bbox[0], bbox[1]);
-  const p1 = viewport.convertToViewportPoint(bbox[2], bbox[3]);
+  // Crop to just the BBox (map) area using the same page->pixel matrix.
+  const p0 = applyMatrix(matrix, bbox[0], bbox[1]);
+  const p1 = applyMatrix(matrix, bbox[2], bbox[3]);
   const cropX = Math.min(p0[0], p1[0]), cropY = Math.min(p0[1], p1[1]);
   const cropW = Math.abs(p1[0] - p0[0]), cropH = Math.abs(p1[1] - p0[1]);
   const cropCanvas = document.createElement('canvas');
@@ -541,8 +558,7 @@ async function parseGeoPdf(file) {
   const imageBlob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/jpeg', 0.85));
   if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
 
-  // Diagnostics: sample a pixel from the full render (center of the page,
-  // not just the crop) to tell a truly blank render apart from a bad crop.
+  // Diagnostics: sample a pixel from the full render to confirm real content.
   let samplePixel = 'n/a';
   try {
     const sx = Math.floor(renderCanvas.width / 2), sy = Math.floor(renderCanvas.height / 2);
