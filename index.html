@@ -12,17 +12,6 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="vendor/Leaflet.ImageOverlay.Rotated.js"></script>
-<script type="module">
-  // MuPDF (WASM) renders GeoPDF trail maps and reads their embedded
-  // geospatial corner points. It fully replaces pdf.js here: pdf.js's
-  // JavaScript JPEG2000 decoder fails silently on real-world GeoPDF
-  // basemaps (common from Esri/ArcGIS exports), rendering them blank.
-  // MuPDF's decoder is the same class as the one Chrome/poppler use and
-  // handles them correctly. It's a much larger download (~10MB) but is
-  // the only reliable option for this without a server round-trip.
-  import * as mupdf from './vendor/mupdf.js';
-  window.mupdf = mupdf;
-</script>
 <style>
   :root {
     --bg: #ffffff; --fg: #111111; --muted: #666666;
@@ -475,8 +464,12 @@ function openRegion(r) {
    plain L.imageOverlay can't). Everything happens on-device — the PDF
    never leaves the phone. */
 async function waitForMupdf() {
-  for (let i = 0; i < 100 && !window.mupdf; i++) await sleep(50);
-  if (!window.mupdf) throw new Error('PDF renderer did not load — try reloading the app.');
+  // Loaded lazily (not on every page load) — this ~10MB WASM library is
+  // only needed when actually importing a PDF, not for viewing already-
+  // saved regions or trail maps.
+  if (!window.mupdf) {
+    window.mupdf = await import('./vendor/mupdf.js');
+  }
 }
 
 function applyMatrix(m, x, y) {
@@ -524,10 +517,11 @@ async function parseGeoPdf(file) {
   const fullLongSide = Math.max(mediaBox[2]-mediaBox[0], mediaBox[3]-mediaBox[1]) * scale;
   if (fullLongSide > 4000) scale *= 4000 / fullLongSide; // safety clamp for memory
 
-  // Manual page-space -> pixel-space matrix (scale + Y-flip), matching how
-  // pdf.js's default viewport transform works, so pixel (0,0) is the page's
-  // top-left corner.
-  const matrix = [scale, 0, 0, -scale, -mediaBox[0]*scale, mediaBox[3]*scale];
+  // Manual page-space -> pixel-space matrix: MuPDF's own canonical page
+  // transform (handles the MediaBox origin and Y-flip correctly) composed
+  // with our scale factor — rather than hand-rolling that transform, which
+  // risks getting the flip direction wrong.
+  const matrix = mupdf.Matrix.concat(page.getTransform(), mupdf.Matrix.scale(scale, scale));
   const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false);
   const pngBytes = pixmap.asPNG();
   const pngBlob = new Blob([pngBytes], { type: 'image/png' });
