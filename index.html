@@ -524,7 +524,8 @@ async function parseGeoPdf(file) {
   const renderCanvas = document.createElement('canvas');
   renderCanvas.width = viewport.width;
   renderCanvas.height = viewport.height;
-  await pdfjsPage.render({ canvasContext: renderCanvas.getContext('2d'), viewport }).promise;
+  const renderCtx = renderCanvas.getContext('2d');
+  await pdfjsPage.render({ canvasContext: renderCtx, viewport }).promise;
 
   // Crop to just the BBox (map) area using pdf.js's own coordinate transform,
   // so we don't need to hand-roll the PDF-space-to-pixel math.
@@ -540,7 +541,19 @@ async function parseGeoPdf(file) {
   const imageBlob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/jpeg', 0.85));
   if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
 
-  return { imageBlob, topLeft: topLeftGp, topRight: topRightGp, bottomLeft: bottomLeftGp };
+  // Diagnostics: sample a pixel from the full render (center of the page,
+  // not just the crop) to tell a truly blank render apart from a bad crop.
+  let samplePixel = 'n/a';
+  try {
+    const sx = Math.floor(renderCanvas.width / 2), sy = Math.floor(renderCanvas.height / 2);
+    const d = renderCtx.getImageData(sx, sy, 1, 1).data;
+    samplePixel = `rgba(${d[0]},${d[1]},${d[2]},${d[3]}) at (${sx},${sy})`;
+  } catch (e) { samplePixel = 'sample failed: ' + e.message; }
+  const debug = `bbox=[${bbox.map(n=>n.toFixed(1))}] scale=${scale.toFixed(3)} ` +
+    `renderCanvas=${renderCanvas.width}x${renderCanvas.height} crop=${Math.round(cropW)}x${Math.round(cropH)} ` +
+    `centerPixel=${samplePixel}`;
+
+  return { imageBlob, topLeft: topLeftGp, topRight: topRightGp, bottomLeft: bottomLeftGp, debug };
 }
 
 document.getElementById('addTrailMapBtn').addEventListener('click', () => {
@@ -556,6 +569,7 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
   try {
     const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('Timed out — the PDF may be too large or something went wrong.')), ms));
     const result = await Promise.race([parseGeoPdf(file), timeout(30000)]);
+    alert('Debug info:\n' + result.debug);
     const name = (prompt('Name this trail map:', file.name.replace(/\.pdf$/i, '')) || file.name).trim();
     if (!name) { status.textContent = ''; return; }
     await dbAddTrailMap({
