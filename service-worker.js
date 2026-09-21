@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'my-location-shell-v3';
+const SHELL_CACHE = 'my-location-shell-v4';
 const TILE_CACHE = 'map-tiles';
 const SHELL_ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
@@ -31,10 +31,24 @@ self.addEventListener('fetch', event => {
 
   if (url.origin !== self.location.origin) return; // let other cross-origin requests pass through normally
 
-  event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request))
-  );
+  event.respondWith(handleShell(event.request));
 });
+
+async function handleShell(request) {
+  const cache = await caches.open(SHELL_CACHE);
+  try {
+    // Network-first: always prefer the latest deployed version when
+    // online, so app updates actually show up. Only fall back to the
+    // cached copy (and re-cache whatever we do get) when offline.
+    const response = await fetch(request);
+    await cache.put(request, response.clone());
+    return response;
+  } catch (err) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    throw err;
+  }
+}
 
 async function handleTile(request) {
   const cache = await caches.open(TILE_CACHE);
