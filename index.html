@@ -82,7 +82,6 @@
   <div class="tabs">
     <button class="tab active" id="tabCapture">Capture</button>
     <button class="tab" id="tabOffline">Offline</button>
-    <button class="tab" id="tabMaps">Maps</button>
   </div>
 </header>
 
@@ -110,6 +109,11 @@
       <button id="saveRegionBtn">Save this view</button>
     </div>
     <div class="row muted" id="estimateRow"></div>
+    <div class="row" style="border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px;">
+      <input type="file" id="pdfFileInput" accept="application/pdf" style="display:none;">
+      <button class="secondary" id="addTrailMapBtn">Add PDF trail map</button>
+      <span class="muted" id="pdfStatus"></span>
+    </div>
     <div class="row muted" id="swStatus"></div>
   </div>
 
@@ -121,7 +125,7 @@
     <div class="row" style="margin-top:10px;"><button class="secondary" id="cancelDownloadBtn">Cancel</button></div>
   </div>
 
-  <!-- Offline region list overlay -->
+  <!-- Offline content overlay: saved regions + trail maps -->
   <div class="overlay hidden" id="regionListOverlay">
     <div class="row" style="justify-content: space-between;">
       <h2 style="font-size:15px; margin:0;">Saved regions</h2>
@@ -129,24 +133,13 @@
     <div class="muted" id="regionListTotal" style="margin-bottom:8px;"></div>
     <div id="regionList"></div>
     <div class="muted" id="regionListEmpty" style="display:none;">No regions saved yet. Switch to Capture to download one.</div>
-  </div>
 
-  <!-- Trail map (georeferenced PDF) overlay -->
-  <div class="overlay hidden" id="mapsOverlay">
-    <div class="row" style="justify-content: space-between;">
+    <div class="row" style="justify-content: space-between; margin-top:18px;">
       <h2 style="font-size:15px; margin:0;">Trail maps</h2>
-    </div>
-    <div class="muted" style="margin-bottom:8px;">
-      Add a georeferenced PDF map (e.g. an Avenza/GeoPDF trail map) to overlay it on the map, warped to its real position.
-    </div>
-    <div class="row">
-      <input type="file" id="pdfFileInput" accept="application/pdf" style="display:none;">
-      <button id="addTrailMapBtn">Add PDF map</button>
-      <span class="muted" id="pdfStatus"></span>
     </div>
     <div class="muted" id="trailMapListTotal" style="margin-bottom:8px;"></div>
     <div id="trailMapList"></div>
-    <div class="muted" id="trailMapListEmpty" style="display:none;">No trail maps added yet.</div>
+    <div class="muted" id="trailMapListEmpty" style="display:none;">No trail maps added yet. Switch to Capture to add one.</div>
   </div>
 </div>
 
@@ -309,18 +302,14 @@ document.getElementById('trackBtn').addEventListener('click', function() {
 /* ---------- Tabs / mode switching ---------- */
 const tabCapture = document.getElementById('tabCapture');
 const tabOffline = document.getElementById('tabOffline');
-const tabMaps = document.getElementById('tabMaps');
 const capturePanel = document.getElementById('capturePanel');
 const regionListOverlay = document.getElementById('regionListOverlay');
-const mapsOverlay = document.getElementById('mapsOverlay');
 
 function setMode(mode) {
   tabCapture.classList.toggle('active', mode === 'capture');
   tabOffline.classList.toggle('active', mode === 'offline');
-  tabMaps.classList.toggle('active', mode === 'maps');
   capturePanel.classList.toggle('hidden', mode !== 'capture');
   regionListOverlay.classList.toggle('hidden', mode !== 'offline');
-  mapsOverlay.classList.toggle('hidden', mode !== 'maps');
 
   if (mode === 'capture') {
     map.setMinZoom(0);
@@ -328,13 +317,11 @@ function setMode(mode) {
     updateEstimate();
   } else if (mode === 'offline') {
     renderRegionList();
-  } else if (mode === 'maps') {
     renderTrailMapList();
   }
 }
 tabCapture.addEventListener('click', () => setMode('capture'));
 tabOffline.addEventListener('click', () => setMode('offline'));
-tabMaps.addEventListener('click', () => setMode('maps'));
 
 /* ---------- Capture: estimate + save ---------- */
 function updateEstimate() {
@@ -633,6 +620,8 @@ function toggleTrailMap(m, on) {
     const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: 0.75 });
     layer.addTo(map);
     activeTrailLayers.set(m.id, { layer, url });
+    map.fitBounds(layer.getBounds());
+    regionListOverlay.classList.add('hidden'); // reveal the map so the overlay is immediately visible
   } else if (!on && activeTrailLayers.has(m.id)) {
     const { layer, url } = activeTrailLayers.get(m.id);
     map.removeLayer(layer);
