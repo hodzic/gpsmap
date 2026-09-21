@@ -655,15 +655,19 @@ async function renderTrailMapList() {
   });
 }
 function toggleTrailMap(m, on) {
-  if (on && !activeTrailLayers.has(m.id)) {
-    const url = URL.createObjectURL(m.imageBlob);
-    const initialOpacity = parseFloat(document.getElementById('trailOpacitySlider').value);
-    const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: initialOpacity });
-    layer.addTo(map);
-    activeTrailLayers.set(m.id, { layer, url });
-    map.fitBounds(layer.getBounds());
-    regionListOverlay.classList.add('hidden'); // reveal the map so the overlay is immediately visible
-    updateTrailOpacityBarVisibility();
+  if (on) {
+    if (!activeTrailLayers.has(m.id)) {
+      const url = URL.createObjectURL(m.imageBlob);
+      const initialOpacity = parseFloat(document.getElementById('trailOpacitySlider').value);
+      const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: initialOpacity });
+      layer.addTo(map);
+      activeTrailLayers.set(m.id, { layer, url });
+      updateTrailOpacityBarVisibility();
+    }
+    // Always reveal/focus on "Open", even if this layer was already active
+    // from a previous tap — otherwise a second tap silently does nothing.
+    map.fitBounds(activeTrailLayers.get(m.id).layer.getBounds());
+    regionListOverlay.classList.add('hidden');
   } else if (!on && activeTrailLayers.has(m.id)) {
     const { layer, url } = activeTrailLayers.get(m.id);
     map.removeLayer(layer);
