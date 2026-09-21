@@ -62,6 +62,8 @@
   .fab.on { background: var(--accent); color: #fff; }
   #coords { font-size: 22px; font-weight: 700; letter-spacing: 0.02em; color: var(--fg); position: absolute; left: 8px; top: 8px; z-index: 500;
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-variant-numeric: tabular-nums; }
+  /* Push Leaflet's zoom control down below the coordinates badge above it */
+  .leaflet-top.leaflet-left { margin-top: 58px; }
 </style>
 </head>
 <body>
@@ -202,7 +204,7 @@ const TILE_CACHE_NAME = 'map-tiles';
 // tile bytes into JS/IndexedDB directly — Cache Storage sidesteps that
 // the same way a plain <img> tag does.
 const map = L.map('map', { zoomControl: false }).setView([37.6624, -121.8747], 12); // default: Pleasanton, CA
-L.control.zoom({ position: 'bottomleft' }).addTo(map);
+L.control.zoom({ position: 'topleft' }).addTo(map);
 const tileLayer = L.tileLayer(TILE_TEMPLATE, {
   maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
 });
