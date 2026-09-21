@@ -11,6 +11,16 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="vendor/Leaflet.ImageOverlay.Rotated.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
+<script type="module">
+  // pdf.js is only used to render an already-parsed GeoPDF page to an image —
+  // pdf-lib (above) handles reading the geospatial corner points, since
+  // pdf.js's public API doesn't expose raw PDF dictionary entries.
+  import * as pdfjsLib from './vendor/pdf.min.mjs';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.min.mjs';
+  window.pdfjsLib = pdfjsLib;
+</script>
 <style>
   :root {
     --bg: #ffffff; --fg: #111111; --muted: #666666;
@@ -72,6 +82,7 @@
   <div class="tabs">
     <button class="tab active" id="tabCapture">Capture</button>
     <button class="tab" id="tabOffline">Offline</button>
+    <button class="tab" id="tabMaps">Maps</button>
   </div>
 </header>
 
@@ -115,15 +126,34 @@
     <div class="row" style="justify-content: space-between;">
       <h2 style="font-size:15px; margin:0;">Saved regions</h2>
     </div>
+    <div class="muted" id="regionListTotal" style="margin-bottom:8px;"></div>
     <div id="regionList"></div>
     <div class="muted" id="regionListEmpty" style="display:none;">No regions saved yet. Switch to Capture to download one.</div>
+  </div>
+
+  <!-- Trail map (georeferenced PDF) overlay -->
+  <div class="overlay hidden" id="mapsOverlay">
+    <div class="row" style="justify-content: space-between;">
+      <h2 style="font-size:15px; margin:0;">Trail maps</h2>
+    </div>
+    <div class="muted" style="margin-bottom:8px;">
+      Add a georeferenced PDF map (e.g. an Avenza/GeoPDF trail map) to overlay it on the map, warped to its real position.
+    </div>
+    <div class="row">
+      <input type="file" id="pdfFileInput" accept="application/pdf" style="display:none;">
+      <button id="addTrailMapBtn">Add PDF map</button>
+      <span class="muted" id="pdfStatus"></span>
+    </div>
+    <div class="muted" id="trailMapListTotal" style="margin-bottom:8px;"></div>
+    <div id="trailMapList"></div>
+    <div class="muted" id="trailMapListEmpty" style="display:none;">No trail maps added yet.</div>
   </div>
 </div>
 
 <script>
 /* ---------- IndexedDB (region metadata only — tile bytes live in the
    Service Worker's Cache Storage, see below) ---------- */
-const DB_NAME = 'gpsmapdb2', DB_VERSION = 1; // new name: avoids version-upgrade conflicts with earlier builds
+const DB_NAME = 'gpsmapdb2', DB_VERSION = 2; // v2 adds the trailMaps store
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -131,6 +161,9 @@ function openDB() {
       const db = req.result;
       if (!db.objectStoreNames.contains('regions')) {
         db.createObjectStore('regions', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('trailMaps')) {
+        db.createObjectStore('trailMaps', { keyPath: 'id' });
       }
     };
     req.onblocked = () => reject(new Error('Database upgrade blocked — close other tabs/instances of this app and reload.'));
@@ -169,6 +202,34 @@ async function dbDeleteRegion(id) {
   // Note: this removes the region from the list but leaves its tiles in
   // the shared tile cache (other regions may reuse them, and there's no
   // per-tile owner tracking) — harmless, just uses a little extra storage.
+}
+
+async function dbAddTrailMap(trailMap) {
+  const db = await dbPromise;
+  return new Promise((res, rej) => {
+    const tx = db.transaction('trailMaps', 'readwrite');
+    tx.objectStore('trailMaps').put(trailMap);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+async function dbGetTrailMaps() {
+  const db = await dbPromise;
+  return new Promise((res, rej) => {
+    const tx = db.transaction('trailMaps', 'readonly');
+    const req = tx.objectStore('trailMaps').getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror = () => rej(req.error);
+  });
+}
+async function dbDeleteTrailMap(id) {
+  const db = await dbPromise;
+  return new Promise((res, rej) => {
+    const tx = db.transaction('trailMaps', 'readwrite');
+    tx.objectStore('trailMaps').delete(id);
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
 }
 
 /* ---------- Tile math ---------- */
@@ -248,26 +309,32 @@ document.getElementById('trackBtn').addEventListener('click', function() {
 /* ---------- Tabs / mode switching ---------- */
 const tabCapture = document.getElementById('tabCapture');
 const tabOffline = document.getElementById('tabOffline');
+const tabMaps = document.getElementById('tabMaps');
 const capturePanel = document.getElementById('capturePanel');
 const regionListOverlay = document.getElementById('regionListOverlay');
+const mapsOverlay = document.getElementById('mapsOverlay');
 
 function setMode(mode) {
+  tabCapture.classList.toggle('active', mode === 'capture');
+  tabOffline.classList.toggle('active', mode === 'offline');
+  tabMaps.classList.toggle('active', mode === 'maps');
+  capturePanel.classList.toggle('hidden', mode !== 'capture');
+  regionListOverlay.classList.toggle('hidden', mode !== 'offline');
+  mapsOverlay.classList.toggle('hidden', mode !== 'maps');
+
   if (mode === 'capture') {
-    tabCapture.classList.add('active'); tabOffline.classList.remove('active');
-    capturePanel.classList.remove('hidden');
-    regionListOverlay.classList.add('hidden');
     map.setMinZoom(0);
     map.setMaxZoom(19);
     updateEstimate();
-  } else {
-    tabOffline.classList.add('active'); tabCapture.classList.remove('active');
-    capturePanel.classList.add('hidden');
+  } else if (mode === 'offline') {
     renderRegionList();
-    regionListOverlay.classList.remove('hidden');
+  } else if (mode === 'maps') {
+    renderTrailMapList();
   }
 }
 tabCapture.addEventListener('click', () => setMode('capture'));
 tabOffline.addEventListener('click', () => setMode('offline'));
+tabMaps.addEventListener('click', () => setMode('maps'));
 
 /* ---------- Capture: estimate + save ---------- */
 function updateEstimate() {
@@ -367,16 +434,20 @@ function fmtSize(bytes) {
 async function renderRegionList() {
   const list = document.getElementById('regionList');
   const empty = document.getElementById('regionListEmpty');
+  const totalEl = document.getElementById('regionListTotal');
   let regions;
   try {
     regions = await dbGetRegions();
   } catch (e) {
     list.innerHTML = `<div class="err">Couldn't load saved regions: ${e.message}</div>`;
     empty.style.display = 'none';
+    totalEl.textContent = '';
     return;
   }
   list.innerHTML = '';
   empty.style.display = regions.length ? 'none' : 'block';
+  const totalBytes = regions.reduce((sum, r) => sum + (r.sizeBytes || 0), 0);
+  totalEl.textContent = regions.length ? `${regions.length} region${regions.length===1?'':'s'} · ${fmtSize(totalBytes)} total` : '';
   regions.sort((a,b) => b.createdAt - a.createdAt).forEach(r => {
     const item = document.createElement('div');
     item.className = 'region-item';
@@ -405,6 +476,168 @@ function openRegion(r) {
   map.setMaxZoom(r.maxZoom);
   const center = [(r.bounds.n + r.bounds.s) / 2, (r.bounds.e + r.bounds.w) / 2];
   map.setView(center, r.minZoom);
+}
+
+/* ---------- Trail maps: georeferenced PDFs overlaid on the map ----------
+   pdf-lib reads the raw /VP (Viewport) dictionary — the GPTS/LPTS corner
+   points and BBox that pdf.js's public API doesn't expose. pdf.js renders
+   the page itself to an image, which we crop to just the BBox map area and
+   overlay with Leaflet.ImageOverlay.Rotated (handles the skew/rotation a
+   plain L.imageOverlay can't). Everything happens on-device — the PDF
+   never leaves the phone. */
+async function waitForPdfjs() {
+  for (let i = 0; i < 50 && !window.pdfjsLib; i++) await sleep(50);
+  if (!window.pdfjsLib) throw new Error('PDF renderer did not load — try reloading the app.');
+}
+
+async function parseGeoPdf(file) {
+  await waitForPdfjs();
+  const buf = await file.arrayBuffer();
+
+  // 1. Pull the geospatial corner points via pdf-lib's low-level dict access.
+  const pdfDoc = await PDFLib.PDFDocument.load(buf, { ignoreEncryption: true });
+  const page = pdfDoc.getPage(0);
+  const vpArr = page.node.lookup(PDFLib.PDFName.of('VP'));
+  if (!vpArr || vpArr.size() === 0) {
+    throw new Error('This PDF has no geospatial referencing (no /VP entry) — it isn\'t a GeoPDF/Avenza-style map.');
+  }
+  const vp = pdfDoc.context.lookup(vpArr.get(0));
+  const bboxArr = vp.lookup(PDFLib.PDFName.of('BBox'));
+  const bbox = bboxArr.asArray().map(n => n.asNumber()); // [x0,y0,x1,y1] in PDF points
+  const measure = vp.lookup(PDFLib.PDFName.of('Measure'));
+  const gpts = measure.lookup(PDFLib.PDFName.of('GPTS')).asArray().map(n => n.asNumber());
+  const lpts = measure.lookup(PDFLib.PDFName.of('LPTS')).asArray().map(n => n.asNumber());
+  const corners = []; // [{lp:[u,v], gp:[lat,lon]}, ...]
+  for (let i = 0; i < lpts.length / 2; i++) {
+    corners.push({ lp: [lpts[i*2], lpts[i*2+1]], gp: [gpts[i*2], gpts[i*2+1]] });
+  }
+  function nearest(u, v) {
+    let best = corners[0], bestD = Infinity;
+    for (const c of corners) {
+      const d = (c.lp[0]-u)**2 + (c.lp[1]-v)**2;
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best.gp;
+  }
+  const topLeftGp = nearest(0, 1), topRightGp = nearest(1, 1), bottomLeftGp = nearest(0, 0);
+
+  // 2. Render the page to a canvas with pdf.js, at a resolution sized to
+  // the map area (BBox), not the full sheet (which may include a legend).
+  const loadingTask = pdfjsLib.getDocument({ data: buf.slice(0) });
+  const pdf = await loadingTask.promise;
+  const pdfjsPage = await pdf.getPage(1);
+  const bboxWidth = Math.abs(bbox[2] - bbox[0]), bboxHeight = Math.abs(bbox[3] - bbox[1]);
+  const targetPx = 2000; // long-side target resolution for the map area
+  let scale = targetPx / Math.max(bboxWidth, bboxHeight);
+  const viewport0 = pdfjsPage.getViewport({ scale: 1 });
+  const fullLongSide = Math.max(viewport0.width, viewport0.height) * scale;
+  if (fullLongSide > 4000) scale *= 4000 / fullLongSide; // safety clamp for memory
+
+  const viewport = pdfjsPage.getViewport({ scale });
+  const renderCanvas = document.createElement('canvas');
+  renderCanvas.width = viewport.width;
+  renderCanvas.height = viewport.height;
+  await pdfjsPage.render({ canvasContext: renderCanvas.getContext('2d'), viewport }).promise;
+
+  // Crop to just the BBox (map) area using pdf.js's own coordinate transform,
+  // so we don't need to hand-roll the PDF-space-to-pixel math.
+  const p0 = viewport.convertToViewportPoint(bbox[0], bbox[1]);
+  const p1 = viewport.convertToViewportPoint(bbox[2], bbox[3]);
+  const cropX = Math.min(p0[0], p1[0]), cropY = Math.min(p0[1], p1[1]);
+  const cropW = Math.abs(p1[0] - p0[0]), cropH = Math.abs(p1[1] - p0[1]);
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = cropW;
+  cropCanvas.height = cropH;
+  cropCanvas.getContext('2d').drawImage(renderCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  const imageBlob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/jpeg', 0.85));
+  if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
+
+  return { imageBlob, topLeft: topLeftGp, topRight: topRightGp, bottomLeft: bottomLeftGp };
+}
+
+document.getElementById('addTrailMapBtn').addEventListener('click', () => {
+  document.getElementById('pdfFileInput').click();
+});
+document.getElementById('pdfFileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = ''; // allow picking the same file again later
+  if (!file) return;
+  const status = document.getElementById('pdfStatus');
+  status.className = 'muted';
+  status.textContent = 'Reading PDF…';
+  try {
+    const result = await parseGeoPdf(file);
+    const name = (prompt('Name this trail map:', file.name.replace(/\.pdf$/i, '')) || file.name).trim();
+    if (!name) { status.textContent = ''; return; }
+    await dbAddTrailMap({
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+      name, imageBlob: result.imageBlob,
+      topLeft: result.topLeft, topRight: result.topRight, bottomLeft: result.bottomLeft,
+      createdAt: Date.now()
+    });
+    status.textContent = '';
+    renderTrailMapList();
+  } catch (err) {
+    status.className = 'row err';
+    status.textContent = err.message;
+  }
+});
+
+const activeTrailLayers = new Map(); // id -> {layer, url}
+async function renderTrailMapList() {
+  const list = document.getElementById('trailMapList');
+  const empty = document.getElementById('trailMapListEmpty');
+  const totalEl = document.getElementById('trailMapListTotal');
+  let maps;
+  try {
+    maps = await dbGetTrailMaps();
+  } catch (e) {
+    list.innerHTML = `<div class="err">Couldn't load trail maps: ${e.message}</div>`;
+    totalEl.textContent = '';
+    return;
+  }
+  list.innerHTML = '';
+  empty.style.display = maps.length ? 'none' : 'block';
+  const totalBytes = maps.reduce((sum, m) => sum + (m.imageBlob ? m.imageBlob.size : 0), 0);
+  totalEl.textContent = maps.length ? `${maps.length} map${maps.length===1?'':'s'} · ${fmtSize(totalBytes)} total` : '';
+  maps.sort((a,b) => b.createdAt - a.createdAt).forEach(m => {
+    const item = document.createElement('div');
+    item.className = 'region-item';
+    item.innerHTML = `
+      <label style="display:flex; align-items:center; gap:10px; flex:1;">
+        <input type="checkbox" ${activeTrailLayers.has(m.id) ? 'checked' : ''} style="width:20px; height:20px;">
+        <div>
+          <div class="region-name">${m.name}</div>
+          <div class="region-meta">${fmtSize(m.imageBlob.size)}</div>
+        </div>
+      </label>
+      <div class="region-actions">
+        <button class="secondary" data-act="delete">Delete</button>
+      </div>`;
+    item.querySelector('input[type=checkbox]').addEventListener('change', (e) => toggleTrailMap(m, e.target.checked));
+    item.querySelector('[data-act=delete]').addEventListener('click', async () => {
+      if (confirm(`Delete "${m.name}"?`)) {
+        toggleTrailMap(m, false);
+        await dbDeleteTrailMap(m.id);
+        renderTrailMapList();
+      }
+    });
+    list.appendChild(item);
+  });
+}
+function toggleTrailMap(m, on) {
+  if (on && !activeTrailLayers.has(m.id)) {
+    const url = URL.createObjectURL(m.imageBlob);
+    const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: 0.75 });
+    layer.addTo(map);
+    activeTrailLayers.set(m.id, { layer, url });
+  } else if (!on && activeTrailLayers.has(m.id)) {
+    const { layer, url } = activeTrailLayers.get(m.id);
+    map.removeLayer(layer);
+    URL.revokeObjectURL(url);
+    activeTrailLayers.delete(m.id);
+  }
 }
 
 /* ---------- Init ---------- */
