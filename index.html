@@ -85,6 +85,11 @@
     <div class="fab" id="trackBtn" title="Track">➜</div>
   </div>
 
+  <div class="floating" id="trailOpacityBar" style="display:none; top:auto; bottom:8px; right:8px; left:8px; flex-direction:row; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
+    <span class="muted" style="font-size:12px; white-space:nowrap;">Map opacity</span>
+    <input type="range" id="trailOpacitySlider" min="0.1" max="1" step="0.05" value="0.85" style="flex:1;">
+  </div>
+
   <!-- Capture panel -->
   <div class="panel" id="capturePanel">
     <div class="row"><span id="captureStatus" class="muted">Pan/zoom to the area you want, then save it.</span></div>
@@ -296,11 +301,18 @@ const tabOffline = document.getElementById('tabOffline');
 const capturePanel = document.getElementById('capturePanel');
 const regionListOverlay = document.getElementById('regionListOverlay');
 
+function updateTrailOpacityBarVisibility() {
+  const bar = document.getElementById('trailOpacityBar');
+  const show = activeTrailLayers.size > 0 && capturePanel.classList.contains('hidden');
+  bar.style.display = show ? 'flex' : 'none';
+}
+
 function setMode(mode) {
   tabCapture.classList.toggle('active', mode === 'capture');
   tabOffline.classList.toggle('active', mode === 'offline');
   capturePanel.classList.toggle('hidden', mode !== 'capture');
   regionListOverlay.classList.toggle('hidden', mode !== 'offline');
+  updateTrailOpacityBarVisibility();
 
   if (mode === 'capture') {
     map.setMinZoom(0);
@@ -313,6 +325,10 @@ function setMode(mode) {
 }
 tabCapture.addEventListener('click', () => setMode('capture'));
 tabOffline.addEventListener('click', () => setMode('offline'));
+document.getElementById('trailOpacitySlider').addEventListener('input', (e) => {
+  const op = parseFloat(e.target.value);
+  activeTrailLayers.forEach(({ layer }) => layer.setOpacity(op));
+});
 
 /* ---------- Capture: estimate + save ---------- */
 function updateEstimate() {
@@ -654,16 +670,19 @@ async function renderTrailMapList() {
 function toggleTrailMap(m, on) {
   if (on && !activeTrailLayers.has(m.id)) {
     const url = URL.createObjectURL(m.imageBlob);
-    const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: 1 });
+    const initialOpacity = parseFloat(document.getElementById('trailOpacitySlider').value);
+    const layer = L.imageOverlay.rotated(url, L.latLng(m.topLeft), L.latLng(m.topRight), L.latLng(m.bottomLeft), { opacity: initialOpacity });
     layer.addTo(map);
     activeTrailLayers.set(m.id, { layer, url });
     map.fitBounds(layer.getBounds());
     regionListOverlay.classList.add('hidden'); // reveal the map so the overlay is immediately visible
+    updateTrailOpacityBarVisibility();
   } else if (!on && activeTrailLayers.has(m.id)) {
     const { layer, url } = activeTrailLayers.get(m.id);
     map.removeLayer(layer);
     URL.revokeObjectURL(url);
     activeTrailLayers.delete(m.id);
+    updateTrailOpacityBarVisibility();
   }
 }
 
