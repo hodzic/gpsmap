@@ -488,54 +488,123 @@ async function waitForMupdf() {
   }
 }
 
-async function parseGeoPdf(file) {
-  await waitForMupdf();
-  const buf = await file.arrayBuffer();
-
-  const doc = mupdf.Document.openDocument(new Uint8Array(buf), 'application/pdf');
-  const page = doc.loadPage(0);
-  const pageObj = page.getObject();
-
-  // 1. Pull the geospatial corner points from the raw /VP (Viewport) entry.
-  const vp0 = pageObj.get('VP', 0);
-  if (!vp0 || vp0.isNull()) {
-    throw new Error('This PDF has no geospatial referencing (no /VP entry) — it isn\'t a GeoPDF/Avenza-style map.');
-  }
-  const bbox = vp0.get('BBox').asJS(); // [x0,y0,x1,y1] in PDF points
-  const measure = vp0.get('Measure');
-  const gpts = measure.get('GPTS').asJS();
-  const lpts = measure.get('LPTS').asJS();
-  const corners = []; // [{lp:[u,v], gp:[lat,lon]}, ...]
-  for (let i = 0; i < lpts.length / 2; i++) {
-    corners.push({ lp: [lpts[i*2], lpts[i*2+1]], gp: [gpts[i*2], gpts[i*2+1]] });
-  }
-  function nearest(u, v) {
-    let best = corners[0], bestD = Infinity;
-    for (const c of corners) {
-      const d = (c.lp[0]-u)**2 + (c.lp[1]-v)**2;
-      if (d < bestD) { bestD = d; best = c; }
+/* ---- Method 1: embedded /VP (Viewport) geospatial metadata ---- */
+function findViewportGeoref(doc) {
+  for (let i = 0; i < doc.countPages(); i++) {
+    const page = doc.loadPage(i);
+    const vp0 = page.getObject().get('VP', 0);
+    if (!vp0 || vp0.isNull()) continue;
+    const bbox = vp0.get('BBox').asJS();
+    const measure = vp0.get('Measure');
+    const gpts = measure.get('GPTS').asJS();
+    const lpts = measure.get('LPTS').asJS();
+    const corners = [];
+    for (let j = 0; j < lpts.length / 2; j++) {
+      corners.push({ lp: [lpts[j*2], lpts[j*2+1]], gp: [gpts[j*2], gpts[j*2+1]] });
     }
-    return best.gp;
+    const nearest = (u, v) => corners.reduce((best, c) => {
+      const d = (c.lp[0]-u)**2 + (c.lp[1]-v)**2;
+      return d < best.d ? { d, gp: c.gp } : best;
+    }, { d: Infinity, gp: null }).gp;
+    return {
+      pageIndex: i, bbox,
+      topLeftGp: nearest(0,1), topRightGp: nearest(1,1), bottomLeftGp: nearest(0,0),
+      method: 'embedded metadata'
+    };
   }
-  const topLeftGp = nearest(0, 1), topRightGp = nearest(1, 1), bottomLeftGp = nearest(0, 0);
+  return null;
+}
 
-  // 2. Render the page with MuPDF at a resolution sized to the map area
-  // (BBox), not the full sheet (which may include a legend).
-  const mediaBox = page.getBounds(); // [x0,y0,x1,y1]
-  const bboxWidth = Math.abs(bbox[2] - bbox[0]), bboxHeight = Math.abs(bbox[3] - bbox[1]);
+/* ---- Method 2: auto-detect from printed "GPS Coordinates: name: lat, lon"
+   text — common in EBRPD-style park brochures. Finds those labels' pixel
+   positions on the map page via text search, then fits a transform. ---- */
+function parseCoordLines(text) {
+  const entries = [];
+  const re = /^(.+?):\s*(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/;
+  for (const raw of text.split('\n')) {
+    const m = raw.trim().match(re);
+    if (m) entries.push({ name: m[1].trim(), lat: parseFloat(m[2]), lon: parseFloat(m[3]) });
+  }
+  return entries;
+}
+function quadCenter(q) { return [(q[0]+q[2]+q[4]+q[6])/4, (q[1]+q[3]+q[5]+q[7])/4]; }
+function solveLinear3(A, b) {
+  const det3 = m => m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1]) - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0]) + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+  const D = det3(A);
+  if (Math.abs(D) < 1e-9) throw new Error('Reference points are too close together to compute a position.');
+  const withCol = (col, vec) => A.map((row, i) => row.map((v, j) => j === col ? vec[i] : v));
+  return [det3(withCol(0,b))/D, det3(withCol(1,b))/D, det3(withCol(2,b))/D];
+}
+function fitAffine(points, key) {
+  // Least-squares fit of target = a*px + b*py + c (exact when points.length === 3).
+  let Sxx=0,Sxy=0,Sx=0,Syy=0,Sy=0,S1=0,Sxt=0,Syt=0,St=0;
+  for (const p of points) {
+    const x=p.px, y=p.py, t=p[key];
+    Sxx+=x*x; Sxy+=x*y; Sx+=x; Syy+=y*y; Sy+=y; S1+=1; Sxt+=x*t; Syt+=y*t; St+=t;
+  }
+  return solveLinear3([[Sxx,Sxy,Sx],[Sxy,Syy,Sy],[Sx,Sy,S1]], [Sxt,Syt,St]);
+}
+function applyAffine(coefLat, coefLon, px, py) {
+  return [coefLat[0]*px+coefLat[1]*py+coefLat[2], coefLon[0]*px+coefLon[1]*py+coefLon[2]];
+}
+function autoDetectGeoref(doc) {
+  let coordEntries = [];
+  for (let i = 0; i < doc.countPages(); i++) {
+    const text = doc.loadPage(i).toStructuredText().asText();
+    if (/GPS Coordinates/i.test(text)) {
+      const found = parseCoordLines(text);
+      if (found.length > coordEntries.length) coordEntries = found;
+    }
+  }
+  if (coordEntries.length < 3) return null;
+
+  let best = null;
+  for (let i = 0; i < doc.countPages(); i++) {
+    const st = doc.loadPage(i).toStructuredText();
+    const refs = [];
+    for (const entry of coordEntries) {
+      let quads = null;
+      try { quads = st.search(entry.name, {}); } catch (e) {}
+      if ((!quads || quads.length !== 1) && entry.name.includes(' ')) {
+        try { const q2 = st.search(entry.name.split(' ')[0], {}); if (q2 && q2.length === 1) quads = q2; } catch (e) {}
+      }
+      if (quads && quads.length === 1) {
+        const [px, py] = quadCenter(quads[0][0]);
+        refs.push({ px, py, lat: entry.lat, lon: entry.lon });
+      }
+    }
+    if (!best || refs.length > best.refs.length) best = { pageIndex: i, refs };
+  }
+  if (!best || best.refs.length < 3) return null;
+
+  const coefLat = fitAffine(best.refs, 'lat'), coefLon = fitAffine(best.refs, 'lon');
+  const page = doc.loadPage(best.pageIndex);
+  const mediaBox = page.getBounds();
+  const [tlLat, tlLon] = applyAffine(coefLat, coefLon, mediaBox[0], mediaBox[3]);
+  const [trLat, trLon] = applyAffine(coefLat, coefLon, mediaBox[2], mediaBox[3]);
+  const [blLat, blLon] = applyAffine(coefLat, coefLon, mediaBox[0], mediaBox[1]);
+  return {
+    pageIndex: best.pageIndex, bbox: mediaBox,
+    topLeftGp: [tlLat, tlLon], topRightGp: [trLat, trLon], bottomLeftGp: [blLat, blLon],
+    method: `auto-detected (${best.refs.length} printed GPS points)`
+  };
+}
+
+/* ---- Render the located page/bbox to an image, given either method's
+   output — same rendering pipeline either way. ---- */
+async function renderGeoPage(doc, georef) {
+  const page = doc.loadPage(georef.pageIndex);
+  const { bbox } = georef;
+  const mediaBox = page.getBounds();
+  const bboxWidth = Math.abs(bbox[2]-bbox[0]), bboxHeight = Math.abs(bbox[3]-bbox[1]);
   const targetPx = 2000; // long-side target resolution for the map area
   let scale = targetPx / Math.max(bboxWidth, bboxHeight);
   const fullLongSide = Math.max(mediaBox[2]-mediaBox[0], mediaBox[3]-mediaBox[1]) * scale;
   if (fullLongSide > 4000) scale *= 4000 / fullLongSide; // safety clamp for memory
 
-  // Manual page-space -> pixel-space matrix: MuPDF's own canonical page
-  // transform (handles the MediaBox origin and Y-flip correctly) composed
-  // with our scale factor — rather than hand-rolling that transform, which
-  // risks getting the flip direction wrong.
   const matrix = mupdf.Matrix.concat(page.getTransform(), mupdf.Matrix.scale(scale, scale));
   const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false);
-  const pngBytes = pixmap.asPNG();
-  const pngBlob = new Blob([pngBytes], { type: 'image/png' });
+  const pngBlob = new Blob([pixmap.asPNG()], { type: 'image/png' });
   const pngUrl = URL.createObjectURL(pngBlob);
   const fullImg = await new Promise((resolve, reject) => {
     const img = new Image();
@@ -579,8 +648,20 @@ async function parseGeoPdf(file) {
 
   const imageBlob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/jpeg', 0.85));
   if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
+  return imageBlob;
+}
 
-  return { imageBlob, topLeft: topLeftGp, topRight: topRightGp, bottomLeft: bottomLeftGp };
+async function parseGeoPdf(file) {
+  await waitForMupdf();
+  const buf = await file.arrayBuffer();
+  const doc = mupdf.Document.openDocument(new Uint8Array(buf), 'application/pdf');
+
+  const georef = findViewportGeoref(doc) || autoDetectGeoref(doc);
+  if (!georef) {
+    throw new Error('Couldn\'t position this PDF — no embedded geospatial metadata (/VP), and no matching printed "GPS Coordinates" found either.');
+  }
+  const imageBlob = await renderGeoPage(doc, georef);
+  return { imageBlob, topLeft: georef.topLeftGp, topRight: georef.topRightGp, bottomLeft: georef.bottomLeftGp, method: georef.method };
 }
 
 document.getElementById('addTrailMapBtn').addEventListener('click', () => {
@@ -602,6 +683,7 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
       name, imageBlob: result.imageBlob,
       topLeft: result.topLeft, topRight: result.topRight, bottomLeft: result.bottomLeft,
+      method: result.method,
       createdAt: Date.now()
     });
     status.textContent = '';
@@ -637,7 +719,7 @@ async function renderTrailMapList() {
       <img src="${thumbUrl}" style="width:48px; height:48px; object-fit:cover; border-radius:6px; border:1px solid var(--border); flex-shrink:0;">
       <div style="flex:1;">
         <div class="region-name">${m.name}</div>
-        <div class="region-meta">${fmtSize(m.imageBlob.size)}</div>
+        <div class="region-meta">${fmtSize(m.imageBlob.size)}${m.method ? ' · ' + m.method : ''}</div>
       </div>
       <div class="region-actions">
         <button class="secondary" data-act="open">Open</button>
