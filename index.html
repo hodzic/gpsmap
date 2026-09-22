@@ -547,7 +547,7 @@ function fitAffine(points, key) {
 function applyAffine(coefLat, coefLon, px, py) {
   return [coefLat[0]*px+coefLat[1]*py+coefLat[2], coefLon[0]*px+coefLon[1]*py+coefLon[2]];
 }
-function autoDetectGeoref(doc) {
+async function autoDetectGeoref(doc) {
   let coordEntries = [];
   for (let i = 0; i < doc.countPages(); i++) {
     const text = doc.loadPage(i).toStructuredText().asText();
@@ -577,31 +577,43 @@ function autoDetectGeoref(doc) {
   }
   if (!best || best.refs.length < 3) return null;
 
-  const coefLat = fitAffine(best.refs, 'lat'), coefLon = fitAffine(best.refs, 'lon');
   const page = doc.loadPage(best.pageIndex);
-  const mediaBox = page.getBounds();
-  const [tlLat, tlLon] = applyAffine(coefLat, coefLon, mediaBox[0], mediaBox[3]);
-  const [trLat, trLon] = applyAffine(coefLat, coefLon, mediaBox[2], mediaBox[3]);
-  const [blLat, blLon] = applyAffine(coefLat, coefLon, mediaBox[0], mediaBox[1]);
+  const { renderCanvas, matrix } = await renderFullPage(page, 2000);
+
+  // Convert each reference point from raw PDF/text-search space into FINAL
+  // rendered-pixel space using the exact same transform (+ same manual
+  // flip) used to build renderCanvas — this guarantees the fitted
+  // transform and the actual image agree on orientation, rather than
+  // assuming MuPDF's text search uses the same convention as rendering.
+  const pixelRefs = best.refs.map(r => {
+    const [rx, ry] = pdfPointToRenderPixel(matrix, renderCanvas.height, r.px, r.py);
+    return { px: rx, py: ry, lat: r.lat, lon: r.lon, name: r.name };
+  });
+  const coefLat = fitAffine(pixelRefs, 'lat'), coefLon = fitAffine(pixelRefs, 'lon');
+  const [tlLat, tlLon] = applyAffine(coefLat, coefLon, 0, 0);
+  const [trLat, trLon] = applyAffine(coefLat, coefLon, renderCanvas.width, 0);
+  const [blLat, blLon] = applyAffine(coefLat, coefLon, 0, renderCanvas.height);
+
+  const imageBlob = await new Promise(resolve => renderCanvas.toBlob(resolve, 'image/jpeg', 0.85));
+  if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
+
   return {
-    pageIndex: best.pageIndex, bbox: mediaBox,
-    topLeftGp: [tlLat, tlLon], topRightGp: [trLat, trLon], bottomLeftGp: [blLat, blLon],
-    method: `auto-detected (${best.refs.length} printed GPS points)`,
-    refs: best.refs
+    imageBlob,
+    topLeft: [tlLat, tlLon], topRight: [trLat, trLon], bottomLeft: [blLat, blLon],
+    method: `auto-detected (${pixelRefs.length} printed GPS points)`,
+    refs: pixelRefs
   };
 }
 
-/* ---- Render the located page/bbox to an image, given either method's
-   output — same rendering pipeline either way. ---- */
-async function renderGeoPage(doc, georef) {
-  const page = doc.loadPage(georef.pageIndex);
-  const { bbox } = georef;
+/* ---- Shared rendering: page -> a correctly-oriented full-page canvas.
+   Used by both georeferencing methods, so anything derived from pixel
+   positions (like auto-detect's reference points) can be expressed in
+   this exact same pixel space rather than a separately-assumed one. ---- */
+async function renderFullPage(page, targetPx) {
   const mediaBox = page.getBounds();
-  const bboxWidth = Math.abs(bbox[2]-bbox[0]), bboxHeight = Math.abs(bbox[3]-bbox[1]);
-  const targetPx = 2000; // long-side target resolution for the map area
-  let scale = targetPx / Math.max(bboxWidth, bboxHeight);
-  const fullLongSide = Math.max(mediaBox[2]-mediaBox[0], mediaBox[3]-mediaBox[1]) * scale;
-  if (fullLongSide > 4000) scale *= 4000 / fullLongSide; // safety clamp for memory
+  const w = mediaBox[2]-mediaBox[0], h = mediaBox[3]-mediaBox[1];
+  let scale = targetPx / Math.max(w, h);
+  if (scale * Math.max(w, h) > 4000) scale = 4000 / Math.max(w, h); // safety clamp for memory
 
   const matrix = mupdf.Matrix.concat(page.getTransform(), mupdf.Matrix.scale(scale, scale));
   const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false);
@@ -628,6 +640,25 @@ async function renderGeoPage(doc, georef) {
   renderCtx.drawImage(fullImg, 0, 0);
   renderCtx.restore();
   URL.revokeObjectURL(pngUrl);
+  return { renderCanvas, matrix, mediaBox };
+}
+function pdfPointToRenderPixel(matrix, renderCanvasHeight, x, y) {
+  // Apply the exact same matrix (+ the same manual vertical flip) used to
+  // build renderCanvas, so a PDF-space point lands on the pixel that
+  // actually depicts it — regardless of what coordinate convention
+  // MuPDF's text search uses internally.
+  const rx = matrix[0]*x + matrix[2]*y + matrix[4];
+  const ry = matrix[1]*x + matrix[3]*y + matrix[5];
+  return [rx, renderCanvasHeight - ry];
+}
+
+/* ---- Render the located page/bbox to an image, given the /VP method's
+   output (auto-detect renders directly inside autoDetectGeoref instead,
+   since it needs the matrix for point conversion too). ---- */
+async function renderGeoPage(doc, georef) {
+  const page = doc.loadPage(georef.pageIndex);
+  const { bbox } = georef;
+  const { renderCanvas, mediaBox } = await renderFullPage(page, 2000);
 
   // Crop to just the BBox (map) area. Computed as a direct proportion of
   // the full page within renderCanvas — not re-derived through `matrix` —
@@ -657,12 +688,17 @@ async function parseGeoPdf(file) {
   const buf = await file.arrayBuffer();
   const doc = mupdf.Document.openDocument(new Uint8Array(buf), 'application/pdf');
 
-  const georef = findViewportGeoref(doc) || autoDetectGeoref(doc);
-  if (!georef) {
+  const vpGeoref = findViewportGeoref(doc);
+  if (vpGeoref) {
+    const imageBlob = await renderGeoPage(doc, vpGeoref);
+    return { imageBlob, topLeft: vpGeoref.topLeftGp, topRight: vpGeoref.topRightGp, bottomLeft: vpGeoref.bottomLeftGp, method: vpGeoref.method };
+  }
+
+  const auto = await autoDetectGeoref(doc);
+  if (!auto) {
     throw new Error('Couldn\'t position this PDF — no embedded geospatial metadata (/VP), and no matching printed "GPS Coordinates" found either.');
   }
-  const imageBlob = await renderGeoPage(doc, georef);
-  return { imageBlob, topLeft: georef.topLeftGp, topRight: georef.topRightGp, bottomLeft: georef.bottomLeftGp, method: georef.method, refs: georef.refs };
+  return auto;
 }
 
 document.getElementById('addTrailMapBtn').addEventListener('click', () => {
