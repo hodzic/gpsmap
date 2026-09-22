@@ -1,8 +1,9 @@
 # My Location
 
 A bare-bones GPS map PWA for Android. Shows your live position on an OpenStreetMap
-map, and lets you download map regions for offline use — no data connection
-needed once a region is saved.
+map, lets you download map regions for offline use, and can overlay a georeferenced
+PDF trail map on top of it — no data connection needed once a region or trail map
+is saved.
 
 **Live app:** https://hodzic.github.io/gpsmap/
 
@@ -10,18 +11,23 @@ needed once a region is saved.
 
 - **Live GPS marker** — shows your current position with an accuracy circle.
   A "Track" toggle follows you continuously as you move.
-- **Capture tab** — pan/zoom to an area, name it, pick a detail level, and
-  download its map tiles for offline use. Shows an estimated tile count and
-  size before you commit.
+- **Capture tab** — two buttons: **Capture region** opens an inline form
+  (still over the live, pannable map) to pick a detail level, see an
+  estimated tile count and size, and name the area before downloading it for
+  offline use; **Add PDF map** imports a trail map to overlay on the base map.
 - **Offline tab** — lists your saved regions (name, tile count, size, zoom
-  range). Tap one to view it with no network at all.
+  range) and trail maps (name, size, how it was positioned). Tap one to view
+  it with no network at all.
+- **PDF trail maps** — import a park/trail brochure PDF and it's overlaid,
+  correctly rotated and scaled, on the real map. See
+  [Trail maps](#trail-maps) below for how positioning works.
 - **Installable** — add it to your Android home screen from Chrome for a
   standalone, full-screen app experience.
 
 ## Detail levels
 
 Each level downloads extra zoom levels *beyond* whatever zoom you're
-currently viewing at when you hit "Save this view":
+currently viewing at when you hit "Capture":
 
 | Level | Extra zoom levels | Typical use |
 |---|---|---|
@@ -36,6 +42,46 @@ Each extra level roughly quadruples the tile count (and download size) for
 the same area, so there's a 2,500-tile cap per region to keep downloads
 reasonable.
 
+## Trail maps
+
+Importing a PDF (**Capture** tab → **Add PDF map**) tries three ways, in
+order, to figure out where it belongs on the real map:
+
+1. **Embedded geospatial metadata** — a true "GeoPDF" with an Adobe `/VP`
+   viewport dictionary (`GPTS`/`LPTS` corner points). Rare in practice, but
+   exact when present.
+2. **Auto-detected printed coordinates** — many park/trail brochures print a
+   "GPS Coordinates" list (`Trailhead Name: lat, lon`) somewhere on the page.
+   The app finds each named label's position on the map page itself and fits
+   a transform from those points.
+3. **Manual placement** — neither of the above panned out. The page is still
+   rendered and dropped onto whatever the map is currently showing, ready for
+   you to position by hand.
+
+Whichever method ran, you always get a chance to confirm or correct the
+placement before it's saved. Two kinds of handles appear on the map:
+
+- **Three or four small points**, each tied to a fixed pixel position on the
+  source image. Drag any single one onto its true location — the others stay
+  put, and the whole overlay reshapes (via an affine fit) to match. When
+  printed coordinate labels were found, those points *are* the labels (up to
+  4 of them, e.g. "Castleridge Trailhead") — drag the actual landmark onto
+  its real position rather than nudging a blank image corner. Otherwise the
+  points default to spots inset from all four edges of the image. A 4th
+  point also turns the fit into a genuine least-squares fit instead of one
+  forced exactly through 3 points with no way to check itself.
+- **One large center handle** — drag it to slide the whole overlay as-is
+  (pure translation, no reshaping). Use this first for a rough position, then
+  the small points to fix any remaining rotation, scale, or skew.
+
+The opacity slider stays available throughout so you can see the base map
+through the overlay while lining things up.
+
+Already-saved trail maps can be repositioned any time via **Adjust** in the
+Offline tab's trail map list — it reuses whichever points you dragged last,
+so repeated adjustments keep refining the same landmarks instead of starting
+over from the image's edges.
+
 ## How it works
 
 - Map tiles come from the [OpenStreetMap](https://www.openstreetmap.org/copyright)
@@ -45,6 +91,14 @@ reasonable.
   offline, and refreshing them from the network when you're not.
 - Region metadata (name, bounds, zoom range, size) is stored in IndexedDB;
   the actual tile images live in the browser's Cache Storage.
+- PDF parsing and rendering runs entirely on-device via
+  [MuPDF's WebAssembly build](https://mupdf.com/) (`vendor/mupdf.js`,
+  `vendor/mupdf-wasm.*`) — the PDF never leaves the phone. The rendered page
+  image and its georeferencing (corner coordinates, and the three or four
+  control points used for re-adjustment) are stored in IndexedDB as an
+  ordinary trail map record; the overlay itself is drawn with a vendored
+  `Leaflet.ImageOverlay.Rotated` (`vendor/Leaflet.ImageOverlay.Rotated.js`),
+  which supports the skew/rotation a plain image overlay can't.
 
 ## Requirements
 
@@ -56,8 +110,9 @@ Service Worker registration entirely.)
 
 ## Deploying (GitHub Pages)
 
-1. Push these files to a repo (flat, no subfolder): `index.html`,
-   `manifest.json`, `service-worker.js`, `icon-192.png`, `icon-512.png`.
+1. Push these files to a repo: `index.html`, `manifest.json`,
+   `service-worker.js`, `icon-192.png`, `icon-512.png`, and the `vendor/`
+   folder (MuPDF WASM + the rotated image overlay plugin) alongside them.
 2. Repo **Settings → Pages** → Source: "Deploy from a branch" → Branch:
    `main`, folder `/ (root)` → Save.
 3. Visit `https://<username>.github.io/<repo>/` — confirm the status line
@@ -67,10 +122,21 @@ Service Worker registration entirely.)
 ## Installing a region for offline use
 
 1. Open the app while you have a connection.
-2. **Capture** tab: pan/zoom to the area, zoom in for street-level detail if
-   needed, give it a name, pick a detail level, tap **Save this view**.
+2. **Capture** tab → **Capture region** → pan/zoom the map (still live behind
+   the form) to the area you want, zoom in for street-level detail if needed,
+   pick a detail level, name it, tap **Capture**.
 3. Switch to **Offline** tab any time afterward — tap the region to view it,
    even with no signal.
+
+## Installing a trail map for offline use
+
+1. **Capture** tab → **Add PDF map** → pick a PDF, then name it when
+   prompted.
+2. Confirm or drag the positioning handles into place (see
+   [Trail maps](#trail-maps)), then **Save position**.
+3. Switch to **Offline** tab any time afterward — tap **Open** to overlay it,
+   or **Adjust** to reposition it, even with no signal (the PDF itself was
+   only needed at import time; the saved trail map is just an image).
 
 ## Known limitations
 
@@ -82,3 +148,12 @@ Service Worker registration entirely.)
   a region if it stops showing tiles offline.
 - Coordinates are decimal degrees (WGS84), shown to 5 decimal places
   (~1 m precision) — though actual GPS accuracy is usually only ~5–10 m.
+- Trail map auto-placement is a best-effort guess, not a guarantee — printed
+  "GPS Coordinates" labels can be ambiguous to match on the page, and even a
+  clean match only pins the *label's* position, not necessarily the actual
+  trailhead/landmark it names. Always eyeball the positioning step before
+  saving, and use **Adjust** later if it turns out to be off.
+- With 4 positioning points the fit is least-squares, not exact — dragging
+  one point can visibly nudge the other three slightly too, since the
+  transform is doing its best to satisfy all 4 at once. With exactly 3
+  points the fit is always exact and the others never move on their own.

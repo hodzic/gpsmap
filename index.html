@@ -40,6 +40,9 @@
     border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: 13px; z-index: 500; }
   .panel.hidden { display: none; }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  /* !important: this must win regardless of what other display-setting
+     classes (e.g. .row) an element also carries. */
+  .hidden { display: none !important; }
   input[type=text], select { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--bg); color: var(--fg); font-size: 13px; min-width: 100px; }
   button { background: var(--accent); color: #fff; border: none; padding: 7px 12px; border-radius: 6px;
@@ -65,6 +68,11 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-variant-numeric: tabular-nums; }
   /* Push Leaflet's zoom control down below the coordinates badge above it */
   .leaflet-top.leaflet-left { margin-top: 58px; }
+  .nudge-handle { width: 22px; height: 22px; border-radius: 50%; background: var(--accent);
+    border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5); cursor: grab; }
+  .nudge-handle-center { width: 34px; height: 34px; border-radius: 50%; background: rgba(37,99,235,0.85);
+    border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.5); cursor: move;
+    display: flex; align-items: center; justify-content: center; color: #fff; font-size: 16px; }
 </style>
 </head>
 <body>
@@ -90,26 +98,45 @@
     <input type="range" id="trailOpacitySlider" min="0.1" max="1" step="0.05" value="0.85" style="flex:1;">
   </div>
 
+  <!-- Nudge panel: shown while positioning a trail map's corner handles -->
+  <div class="panel hidden" id="nudgePanel">
+    <div class="row"><span class="muted">Drag the big center handle to move the whole map as-is, or a small point onto its true position (the others stay put and the map reshapes to fit).</span></div>
+    <div class="row">
+      <button id="nudgeSaveBtn">Save position</button>
+      <button class="secondary" id="nudgeCancelBtn">Cancel</button>
+    </div>
+  </div>
+
   <!-- Capture panel -->
   <div class="panel" id="capturePanel">
-    <div class="row"><span id="captureStatus" class="muted">Pan/zoom to the area you want, then save it.</span></div>
-    <div class="row">
-      <input type="text" id="regionName" placeholder="Region name (e.g. Pleasanton)">
-    </div>
-    <div class="row">
-      <select id="zoomDepth">
-        <option value="0">Overview only (smallest)</option>
-        <option value="2" selected>Neighborhood detail</option>
-        <option value="4">Street-level detail (largest)</option>
-      </select>
-      <button id="saveRegionBtn">Save this view</button>
-    </div>
-    <div class="row muted" id="estimateRow"></div>
-    <div class="row" style="border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px;">
+    <div class="row" id="captureButtonsRow">
+      <button id="openCaptureRegionBtn">Capture region</button>
+      <button id="addTrailMapBtn">Add PDF map</button>
       <input type="file" id="pdfFileInput" accept="application/pdf" style="display:none;">
-      <button class="secondary" id="addTrailMapBtn">Add PDF trail map</button>
-      <span class="muted" id="pdfStatus"></span>
     </div>
+    <div class="row muted" id="captureGeneralStatus"></div>
+    <div class="row muted" id="pdfStatus"></div>
+
+    <div id="captureRegionForm" class="hidden">
+      <div class="row muted">Pan/zoom the map to the area you want, pick a detail level, and name it.</div>
+      <div class="row">
+        <select id="zoomDepth">
+          <option value="0">Overview only (smallest)</option>
+          <option value="2" selected>Neighborhood detail</option>
+          <option value="4">Street-level detail (largest)</option>
+        </select>
+      </div>
+      <div class="row muted" id="estimateRow"></div>
+      <div class="row">
+        <input type="text" id="captureRegionName" placeholder="Region name (e.g. Pleasanton)">
+      </div>
+      <div class="row" id="captureRegionError"></div>
+      <div class="row">
+        <button id="saveRegionBtn">Capture</button>
+        <button class="secondary" id="cancelCaptureRegionBtn">Cancel</button>
+      </div>
+    </div>
+
     <div class="row muted" id="swStatus"></div>
   </div>
 
@@ -328,6 +355,7 @@ tabOffline.addEventListener('click', () => setMode('offline'));
 document.getElementById('trailOpacitySlider').addEventListener('input', (e) => {
   const op = parseFloat(e.target.value);
   activeTrailLayers.forEach(({ layer }) => layer.setOpacity(op));
+  if (nudgeState) nudgeState.layer.setOpacity(op);
 });
 
 /* ---------- Capture: estimate + save ---------- */
@@ -346,17 +374,39 @@ function updateEstimate() {
     document.getElementById('saveRegionBtn').disabled = false;
   }
 }
-map.on('moveend zoomend', () => { if (!capturePanel.classList.contains('hidden')) updateEstimate(); });
+const captureRegionForm = document.getElementById('captureRegionForm');
+function regionFormVisible() { return !capturePanel.classList.contains('hidden') && !captureRegionForm.classList.contains('hidden'); }
+function setCaptureRegionError(msg) {
+  const el = document.getElementById('captureRegionError');
+  el.className = msg ? 'row err' : 'row';
+  el.textContent = msg || '';
+}
+map.on('moveend zoomend', () => { if (regionFormVisible()) updateEstimate(); });
 document.getElementById('zoomDepth').addEventListener('change', updateEstimate);
 updateEstimate();
 
+document.getElementById('openCaptureRegionBtn').addEventListener('click', () => {
+  document.getElementById('captureButtonsRow').classList.add('hidden');
+  captureRegionForm.classList.remove('hidden');
+  setCaptureRegionError('');
+  updateEstimate();
+  document.getElementById('captureRegionName').focus();
+});
+function closeCaptureRegionForm() {
+  captureRegionForm.classList.add('hidden');
+  document.getElementById('captureButtonsRow').classList.remove('hidden');
+  document.getElementById('captureRegionName').value = '';
+  setCaptureRegionError('');
+}
+document.getElementById('cancelCaptureRegionBtn').addEventListener('click', closeCaptureRegionForm);
+
 let downloadCancelled = false;
 document.getElementById('saveRegionBtn').addEventListener('click', async () => {
-  const name = document.getElementById('regionName').value.trim();
-  if (!name) { alert('Give the region a name.'); return; }
-  if (!navigator.onLine) { alert('You appear to be offline — connect to the internet to download a region.'); return; }
+  const name = document.getElementById('captureRegionName').value.trim();
+  if (!name) { setCaptureRegionError('Give the region a name.'); return; }
+  if (!navigator.onLine) { setCaptureRegionError('You appear to be offline — connect to the internet to download a region.'); return; }
   if (!navigator.serviceWorker.controller) {
-    alert('Offline support is still starting up. Reload the page once, then try downloading again.');
+    setCaptureRegionError('Offline support is still starting up. Reload the page once, then try again.');
     return;
   }
   const depth = parseInt(document.getElementById('zoomDepth').value, 10);
@@ -364,7 +414,8 @@ document.getElementById('saveRegionBtn').addEventListener('click', async () => {
   const minZoom = z, maxZoom = Math.min(z + depth, 19);
   const bounds = map.getBounds();
   const tiles = tilesForBounds(bounds, minZoom, maxZoom);
-  if (tiles.length > MAX_TILES) { alert('Too many tiles — zoom in or lower the detail level.'); return; }
+  if (tiles.length > MAX_TILES) { setCaptureRegionError('Too many tiles — zoom in or lower the detail level.'); return; }
+  setCaptureRegionError('');
 
   downloadCancelled = false;
   document.getElementById('progressOverlay').classList.remove('hidden');
@@ -396,8 +447,8 @@ document.getElementById('saveRegionBtn').addEventListener('click', async () => {
   if (downloadCancelled) return;
 
   if (failed === tiles.length) {
-    alert('Every tile failed to download. Error: ' + (lastError ? (lastError.name + ': ' + lastError.message) : 'unknown') +
-      '\n\nCheck you have an internet connection and try again.');
+    setCaptureRegionError('Every tile failed to download (' + (lastError ? (lastError.name + ': ' + lastError.message) : 'unknown error') +
+      '). Check your connection and try again.');
     return;
   }
 
@@ -412,10 +463,11 @@ document.getElementById('saveRegionBtn').addEventListener('click', async () => {
       bounds: { n: bounds.getNorth(), s: bounds.getSouth(), e: bounds.getEast(), w: bounds.getWest() },
       minZoom, maxZoom, tileCount: tiles.length, sizeBytes, createdAt: Date.now()
     });
-    document.getElementById('regionName').value = '';
-    alert(`Saved "${name}" (${tiles.length} tiles` + (failed ? `, ${failed} failed` : '') + ').');
+    closeCaptureRegionForm();
+    document.getElementById('captureGeneralStatus').textContent =
+      `Saved "${name}" (${tiles.length} tiles` + (failed ? `, ${failed} failed` : '') + ').';
   } catch (e) {
-    alert('Tiles downloaded, but saving the region record failed: ' + e.message);
+    setCaptureRegionError('Tiles downloaded, but saving the region record failed: ' + e.message);
   }
 });
 document.getElementById('cancelDownloadBtn').addEventListener('click', () => { downloadCancelled = true; });
@@ -601,7 +653,8 @@ async function autoDetectGeoref(doc) {
     imageBlob,
     topLeft: [tlLat, tlLon], topRight: [trLat, trLon], bottomLeft: [blLat, blLon],
     method: `auto-detected (${pixelRefs.length} printed GPS points)`,
-    refs: pixelRefs
+    refs: pixelRefs,
+    imageWidth: renderCanvas.width, imageHeight: renderCanvas.height
   };
 }
 
@@ -695,13 +748,20 @@ async function parseGeoPdf(file) {
   }
 
   const auto = await autoDetectGeoref(doc);
-  if (!auto) {
-    throw new Error('Couldn\'t position this PDF — no embedded geospatial metadata (/VP), and no matching printed "GPS Coordinates" found either.');
-  }
-  return auto;
+  if (auto) return auto;
+
+  // Neither method could place the map automatically — render the first
+  // page as-is and let the caller position it manually (nudge UI), anchored
+  // to whatever the map is currently showing, rather than failing outright.
+  const page = doc.loadPage(0);
+  const { renderCanvas } = await renderFullPage(page, 2000);
+  const imageBlob = await new Promise(resolve => renderCanvas.toBlob(resolve, 'image/jpeg', 0.85));
+  if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
+  return { imageBlob, topLeft: null, topRight: null, bottomLeft: null, method: 'manual placement' };
 }
 
 document.getElementById('addTrailMapBtn').addEventListener('click', () => {
+  if (!captureRegionForm.classList.contains('hidden')) closeCaptureRegionForm();
   document.getElementById('pdfFileInput').click();
 });
 document.getElementById('pdfFileInput').addEventListener('change', async (e) => {
@@ -714,21 +774,57 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
   try {
     const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('Timed out — the PDF may be too large or something went wrong.')), ms));
     const result = await Promise.race([parseGeoPdf(file), timeout(30000)]);
-    if (result.refs) {
-      alert('Auto-detect reference points:\n' + result.refs.map(r =>
-        `${r.name}: px(${Math.round(r.px)},${Math.round(r.py)}) -> (${r.lat},${r.lon})`).join('\n'));
-    }
     const name = (prompt('Name this trail map:', file.name.replace(/\.pdf$/i, '')) || file.name).trim();
     if (!name) { status.textContent = ''; return; }
-    await dbAddTrailMap({
-      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
-      name, imageBlob: result.imageBlob,
-      topLeft: result.topLeft, topRight: result.topRight, bottomLeft: result.bottomLeft,
-      method: result.method,
-      createdAt: Date.now()
-    });
     status.textContent = '';
-    renderTrailMapList();
+
+    // Whatever the georeferencing guess is (embedded metadata, auto-detected
+    // printed coordinates, or nothing at all), let the user confirm/nudge it
+    // into place before it's saved — auto-placement is frequently off (label
+    // text position != marker position) and sometimes isn't available at all.
+    let topLeft = result.topLeft, topRight = result.topRight, bottomLeft = result.bottomLeft;
+    if (!topLeft) {
+      const b = map.getBounds();
+      topLeft = [b.getNorth(), b.getWest()];
+      topRight = [b.getNorth(), b.getEast()];
+      bottomLeft = [b.getSouth(), b.getWest()];
+    }
+    let points, imageWidth, imageHeight;
+    if (result.refs && result.refs.length >= 3) {
+      // Real landmarks the auto-detector found printed on the map — drag
+      // these directly onto their true position instead of blank corners.
+      points = result.refs.slice(0, 4).map(r => ({ px: r.px, py: r.py, lat: r.lat, lon: r.lon, name: r.name }));
+      imageWidth = result.imageWidth; imageHeight = result.imageHeight;
+    } else {
+      points = cornerFallbackPoints(topLeft, topRight, bottomLeft);
+      imageWidth = 1; imageHeight = 1;
+    }
+
+    const url = URL.createObjectURL(result.imageBlob);
+    const initialOpacity = Math.max(parseFloat(document.getElementById('trailOpacitySlider').value), 0.7);
+    const layer = L.imageOverlay.rotated(url, L.latLng(topLeft), L.latLng(topRight), L.latLng(bottomLeft), { opacity: initialOpacity });
+    layer.addTo(map);
+
+    startNudge({
+      layer, points, imageWidth, imageHeight,
+      onSave: async ({ topLeft, topRight, bottomLeft, points: finalPoints }) => {
+        await dbAddTrailMap({
+          id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+          name, imageBlob: result.imageBlob,
+          topLeft, topRight, bottomLeft,
+          controlPoints: finalPoints, imageWidth, imageHeight,
+          method: result.method,
+          createdAt: Date.now()
+        });
+        map.removeLayer(layer);
+        URL.revokeObjectURL(url);
+        renderTrailMapList();
+      },
+      onCancel: () => {
+        map.removeLayer(layer);
+        URL.revokeObjectURL(url);
+      }
+    });
   } catch (err) {
     status.className = 'row err';
     status.textContent = err.message;
@@ -764,9 +860,11 @@ async function renderTrailMapList() {
       </div>
       <div class="region-actions">
         <button class="secondary" data-act="open">Open</button>
+        <button class="secondary" data-act="adjust">Adjust</button>
         <button class="secondary" data-act="delete">Delete</button>
       </div>`;
     item.querySelector('[data-act=open]').addEventListener('click', () => toggleTrailMap(m, true));
+    item.querySelector('[data-act=adjust]').addEventListener('click', () => adjustTrailMap(m));
     item.querySelector('[data-act=delete]').addEventListener('click', async () => {
       if (confirm(`Delete "${m.name}"?`)) {
         toggleTrailMap(m, false);
@@ -799,6 +897,164 @@ function toggleTrailMap(m, on) {
     updateTrailOpacityBarVisibility();
   }
 }
+
+/* ---------- Nudge: fix three control points {px,py (pixel position within
+   the source image, immutable) -> lat,lon (draggable geo position)} and let
+   the user drag any one while the other two hold still; the whole overlay's
+   placement is recomputed each drag from that 3-point correspondence via
+   the same affine fit the auto-detector itself uses (fitAffine/applyAffine,
+   defined above). When auto-detect found real printed landmark labels, drag
+   THOSE onto their true spot — much more meaningful than dragging a blank
+   image corner. Used both right after import and later via "Adjust". ---------- */
+function cornerFallbackPoints(topLeft, topRight, bottomLeft) {
+  // No individually-recognizable landmarks to anchor on — fall back to four
+  // points inset from all four edges (not literal corners, which are often
+  // blank margin) in normalized 0..1 image-pixel space. A 4th point also
+  // makes the fit an actual least-squares fit instead of forcing the
+  // transform through exactly 3 points with no way to check itself.
+  const at = (fx, fy) => [
+    topLeft[0] + fx * (topRight[0] - topLeft[0]) + fy * (bottomLeft[0] - topLeft[0]),
+    topLeft[1] + fx * (topRight[1] - topLeft[1]) + fy * (bottomLeft[1] - topLeft[1])
+  ];
+  const pt = (px, py, name) => { const [lat, lon] = at(px, py); return { px, py, lat, lon, name }; };
+  return [
+    pt(0.5, 0.08, 'Top edge'), pt(0.92, 0.5, 'Right edge'),
+    pt(0.5, 0.92, 'Bottom edge'), pt(0.08, 0.5, 'Left edge')
+  ];
+}
+
+function adjustTrailMap(m) {
+  toggleTrailMap(m, true); // make sure it's visible and focused
+  const { layer } = activeTrailLayers.get(m.id);
+  const original = { topLeft: m.topLeft, topRight: m.topRight, bottomLeft: m.bottomLeft };
+  const hasSavedPoints = m.controlPoints && m.controlPoints.length >= 3;
+  const points = hasSavedPoints ? m.controlPoints.map(p => ({ ...p })) : cornerFallbackPoints(m.topLeft, m.topRight, m.bottomLeft);
+  const imageWidth = hasSavedPoints ? m.imageWidth : 1;
+  const imageHeight = hasSavedPoints ? m.imageHeight : 1;
+  startNudge({
+    layer, points, imageWidth, imageHeight,
+    onSave: async ({ topLeft, topRight, bottomLeft, points: finalPoints }) => {
+      await dbAddTrailMap({
+        ...m,
+        topLeft, topRight, bottomLeft,
+        controlPoints: finalPoints, imageWidth, imageHeight,
+        method: /manually adjusted/.test(m.method || '') ? m.method : `${m.method || 'manual placement'} + manually adjusted`
+      });
+      renderTrailMapList();
+    },
+    onCancel: () => {
+      layer.reposition(L.latLng(original.topLeft), L.latLng(original.topRight), L.latLng(original.bottomLeft));
+    }
+  });
+}
+
+let nudgeState = null; // { layer, markers, onSave, onCancel, wasCapture, getResult }
+function nudgePointIcon() { return L.divIcon({ className: 'nudge-handle', iconSize: [22, 22] }); }
+function nudgeCenterIcon() { return L.divIcon({ className: 'nudge-handle-center', html: '&#10021;', iconSize: [34, 34] }); }
+function ptsCentroid(pts) { return L.latLng(pts.reduce((s, p) => s + p.lat, 0) / pts.length, pts.reduce((s, p) => s + p.lon, 0) / pts.length); }
+function startNudge({ layer, points, imageWidth, imageHeight, onSave, onCancel }) {
+  if (nudgeState) return; // one nudge session at a time
+  if (!points || points.length < 3) throw new Error('startNudge needs at least 3 control points.');
+
+  const wasCapture = !capturePanel.classList.contains('hidden');
+  capturePanel.classList.add('hidden');
+  regionListOverlay.classList.add('hidden');
+  // Keep the opacity slider available (lifted above the nudge panel so they
+  // don't overlap) — seeing the base map through the overlay is how you
+  // actually line up landmarks while dragging the points.
+  const opacityBar = document.getElementById('trailOpacityBar');
+  opacityBar.style.display = 'flex';
+  opacityBar.style.bottom = '90px';
+  document.getElementById('trailOpacitySlider').value = layer.options.opacity ?? 0.85;
+  document.getElementById('nudgePanel').classList.remove('hidden');
+
+  const pts = points.map(p => ({ ...p })); // px,py stay fixed; lat,lon are what dragging changes
+  const markers = pts.map(p => {
+    const mk = L.marker([p.lat, p.lon], { icon: nudgePointIcon(), draggable: true }).addTo(map);
+    if (p.name) mk.bindTooltip(p.name, { direction: 'top', offset: [0, -12] });
+    return mk;
+  });
+
+  function recompute() {
+    const coefLat = fitAffine(pts, 'lat'), coefLon = fitAffine(pts, 'lon');
+    const topLeft = applyAffine(coefLat, coefLon, 0, 0);
+    const topRight = applyAffine(coefLat, coefLon, imageWidth, 0);
+    const bottomLeft = applyAffine(coefLat, coefLon, 0, imageHeight);
+    layer.reposition(L.latLng(topLeft), L.latLng(topRight), L.latLng(bottomLeft));
+    return { coefLat, coefLon, topLeft, topRight, bottomLeft };
+  }
+  const centerMarker = L.marker(ptsCentroid(pts), { icon: nudgeCenterIcon(), draggable: true }).addTo(map);
+  let prevCenter = centerMarker.getLatLng();
+
+  markers.forEach((mk, i) => mk.on('drag', () => {
+    const ll = mk.getLatLng();
+    pts[i].lat = ll.lat; pts[i].lon = ll.lng;
+    const { coefLat, coefLon } = recompute();
+    // With exactly 3 points the fit is exact, so this is a no-op. With 4+
+    // points it's least-squares and generally can't satisfy every point at
+    // once — without this, the other markers would stay frozen at their old
+    // spot while the image warps underneath them, visibly drifting away
+    // from the edge/landmark they're meant to mark. Snap them to wherever
+    // the freshly-refit transform actually places their pixel instead.
+    pts.forEach((p, j) => {
+      if (j === i) return;
+      const [lat, lon] = applyAffine(coefLat, coefLon, p.px, p.py);
+      p.lat = lat; p.lon = lon;
+      markers[j].setLatLng([lat, lon]);
+    });
+    prevCenter = ptsCentroid(pts);
+    centerMarker.setLatLng(prevCenter);
+  }));
+  centerMarker.on('drag', () => {
+    // Pure translate: shift every point by the same delta, so the overlay
+    // moves as-is without reshaping — the complement to dragging a single
+    // point, which reshapes but can't just slide the whole thing.
+    const c = centerMarker.getLatLng();
+    const dLat = c.lat - prevCenter.lat, dLon = c.lng - prevCenter.lng;
+    prevCenter = c;
+    pts.forEach((p, i) => { p.lat += dLat; p.lon += dLon; markers[i].setLatLng([p.lat, p.lon]); });
+    recompute();
+  });
+
+  nudgeState = {
+    layer, markers: [...markers, centerMarker], onSave, onCancel, wasCapture,
+    getResult: () => ({ ...recompute(), points: pts.map(p => ({ ...p })) })
+  };
+  map.fitBounds(layer.getBounds(), { maxZoom: 18, padding: [40, 40] });
+}
+function endNudgeUI() {
+  if (!nudgeState) return;
+  document.getElementById('trailOpacityBar').style.bottom = ''; // revert to CSS default; visibility recalculated by setMode() below
+  // Tolerate a handle failing to remove cleanly — losing the save because
+  // Leaflet's own marker-drag cleanup hiccuped would be much worse than a
+  // stray leftover handle. Fall back to yanking its DOM node directly so a
+  // failed removeLayer() can't leave a visible orphaned handle on the map.
+  nudgeState.markers.forEach(mk => {
+    try { map.removeLayer(mk); }
+    catch (e) {
+      console.error('Failed to remove nudge handle cleanly:', e);
+      const el = mk.getElement && mk.getElement();
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    }
+  });
+  const wasCapture = nudgeState.wasCapture;
+  nudgeState = null;
+  document.getElementById('nudgePanel').classList.add('hidden');
+  setMode(wasCapture ? 'capture' : 'offline');
+}
+document.getElementById('nudgeSaveBtn').addEventListener('click', async () => {
+  if (!nudgeState) return;
+  const result = nudgeState.getResult();
+  const onSave = nudgeState.onSave;
+  endNudgeUI();
+  await onSave(result);
+});
+document.getElementById('nudgeCancelBtn').addEventListener('click', () => {
+  if (!nudgeState) return;
+  const onCancel = nudgeState.onCancel;
+  endNudgeUI();
+  onCancel();
+});
 
 /* ---------- Init ---------- */
 setMode('capture');
