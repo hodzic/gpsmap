@@ -570,7 +570,7 @@ function autoDetectGeoref(doc) {
       }
       if (quads && quads.length === 1) {
         const [px, py] = quadCenter(quads[0][0]);
-        refs.push({ px, py, lat: entry.lat, lon: entry.lon });
+        refs.push({ px, py, lat: entry.lat, lon: entry.lon, name: entry.name });
       }
     }
     if (!best || refs.length > best.refs.length) best = { pageIndex: i, refs };
@@ -586,7 +586,8 @@ function autoDetectGeoref(doc) {
   return {
     pageIndex: best.pageIndex, bbox: mediaBox,
     topLeftGp: [tlLat, tlLon], topRightGp: [trLat, trLon], bottomLeftGp: [blLat, blLon],
-    method: `auto-detected (${best.refs.length} printed GPS points)`
+    method: `auto-detected (${best.refs.length} printed GPS points)`,
+    refs: best.refs
   };
 }
 
@@ -661,7 +662,7 @@ async function parseGeoPdf(file) {
     throw new Error('Couldn\'t position this PDF — no embedded geospatial metadata (/VP), and no matching printed "GPS Coordinates" found either.');
   }
   const imageBlob = await renderGeoPage(doc, georef);
-  return { imageBlob, topLeft: georef.topLeftGp, topRight: georef.topRightGp, bottomLeft: georef.bottomLeftGp, method: georef.method };
+  return { imageBlob, topLeft: georef.topLeftGp, topRight: georef.topRightGp, bottomLeft: georef.bottomLeftGp, method: georef.method, refs: georef.refs };
 }
 
 document.getElementById('addTrailMapBtn').addEventListener('click', () => {
@@ -677,6 +678,10 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
   try {
     const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('Timed out — the PDF may be too large or something went wrong.')), ms));
     const result = await Promise.race([parseGeoPdf(file), timeout(30000)]);
+    if (result.refs) {
+      alert('Auto-detect reference points:\n' + result.refs.map(r =>
+        `${r.name}: px(${Math.round(r.px)},${Math.round(r.py)}) -> (${r.lat},${r.lon})`).join('\n'));
+    }
     const name = (prompt('Name this trail map:', file.name.replace(/\.pdf$/i, '')) || file.name).trim();
     if (!name) { status.textContent = ''; return; }
     await dbAddTrailMap({
