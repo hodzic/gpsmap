@@ -885,6 +885,13 @@ function toggleTrailMap(m, on) {
       activeTrailLayers.set(m.id, { layer, url });
       updateTrailOpacityBarVisibility();
     }
+    // A previously-opened region clamps min/max zoom to whatever it actually
+    // downloaded (see openRegion) — that constraint has nothing to do with
+    // a trail map overlay and, left in place, can pin the map at a zoom
+    // level where zooming in/out appears to do nothing. Lift it before
+    // focusing the trail map.
+    map.setMinZoom(0);
+    map.setMaxZoom(19);
     // Always reveal/focus on "Open", even if this layer was already active
     // from a previous tap — otherwise a second tap silently does nothing.
     map.fitBounds(activeTrailLayers.get(m.id).layer.getBounds());
