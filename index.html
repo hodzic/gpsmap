@@ -61,6 +61,11 @@
   .progress-wrap { width: 100%; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin: 6px 0; }
   .progress-bar { height: 100%; background: var(--accent); width: 0%; }
   .floating { position: absolute; right: 8px; top: 8px; z-index: 500; display: flex; flex-direction: column; gap: 6px; }
+  .opacity-bar-vertical { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); z-index: 500;
+    display: none; flex-direction: column; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 8px; }
+  .opacity-bar-vertical input[type=range] { writing-mode: vertical-lr; direction: rtl;
+    width: 20px; height: 140px; accent-color: var(--accent); }
   .fab { width: 40px; height: 40px; border-radius: 50%; background: var(--panel); border: 1px solid var(--border);
     color: var(--fg); font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
   .fab.on { background: var(--accent); color: #fff; }
@@ -93,13 +98,14 @@
     <div class="fab" id="trackBtn" title="Track">➜</div>
   </div>
 
-  <div class="floating" id="trailOpacityBar" style="display:none; top:auto; bottom:8px; right:8px; left:8px; flex-direction:row; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
-    <span class="muted" style="font-size:12px; white-space:nowrap;">Map opacity</span>
-    <input type="range" id="trailOpacitySlider" min="0.1" max="1" step="0.05" value="0.85" style="flex:1;">
+  <div class="opacity-bar-vertical" id="trailOpacityBar">
+    <span class="muted" id="trailOpacityValue" style="font-size:11px;">85%</span>
+    <input type="range" id="trailOpacitySlider" min="0.1" max="1" step="0.05" value="0.85">
   </div>
 
   <!-- Nudge panel: shown while positioning a trail map's corner handles -->
   <div class="panel hidden" id="nudgePanel">
+    <div class="row muted" id="nudgeDetectionStatus"></div>
     <div class="row"><span class="muted">Drag the big center handle to move the whole map as-is, or a small point onto its true position (the others stay put and the map reshapes to fit).</span></div>
     <div class="row">
       <button id="nudgeSaveBtn">Save position</button>
@@ -329,9 +335,15 @@ const capturePanel = document.getElementById('capturePanel');
 const regionListOverlay = document.getElementById('regionListOverlay');
 
 function updateTrailOpacityBarVisibility() {
+  // Vertically centered on the right edge, so it never overlaps the
+  // bottom-docked capture/nudge panels — show it whenever a trail map
+  // overlay is actually on the map, regardless of which tab is active.
   const bar = document.getElementById('trailOpacityBar');
-  const show = activeTrailLayers.size > 0 && capturePanel.classList.contains('hidden');
-  bar.style.display = show ? 'flex' : 'none';
+  bar.style.display = (activeTrailLayers.size > 0 || nudgeState) ? 'flex' : 'none';
+}
+function setTrailOpacityValue(op) {
+  document.getElementById('trailOpacitySlider').value = op;
+  document.getElementById('trailOpacityValue').textContent = Math.round(op * 100) + '%';
 }
 
 function setMode(mode) {
@@ -342,6 +354,12 @@ function setMode(mode) {
   updateTrailOpacityBarVisibility();
 
   if (mode === 'capture') {
+    // Capture is for starting something new (a region or a PDF import) —
+    // don't leave a previously-opened trail map cluttering the view or
+    // obscuring the base map you're trying to pan/zoom over.
+    activeTrailLayers.forEach(({ layer, url }) => { map.removeLayer(layer); URL.revokeObjectURL(url); });
+    activeTrailLayers.clear();
+    updateTrailOpacityBarVisibility();
     map.setMinZoom(0);
     map.setMaxZoom(19);
     updateEstimate();
@@ -354,6 +372,7 @@ tabCapture.addEventListener('click', () => setMode('capture'));
 tabOffline.addEventListener('click', () => setMode('offline'));
 document.getElementById('trailOpacitySlider').addEventListener('input', (e) => {
   const op = parseFloat(e.target.value);
+  document.getElementById('trailOpacityValue').textContent = Math.round(op * 100) + '%';
   activeTrailLayers.forEach(({ layer }) => layer.setOpacity(op));
   if (nudgeState) nudgeState.layer.setOpacity(op);
 });
@@ -733,7 +752,7 @@ async function renderGeoPage(doc, georef) {
 
   const imageBlob = await new Promise(resolve => cropCanvas.toBlob(resolve, 'image/jpeg', 0.85));
   if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
-  return imageBlob;
+  return { imageBlob, imageWidth: cropW, imageHeight: cropH };
 }
 
 async function parseGeoPdf(file) {
@@ -743,8 +762,8 @@ async function parseGeoPdf(file) {
 
   const vpGeoref = findViewportGeoref(doc);
   if (vpGeoref) {
-    const imageBlob = await renderGeoPage(doc, vpGeoref);
-    return { imageBlob, topLeft: vpGeoref.topLeftGp, topRight: vpGeoref.topRightGp, bottomLeft: vpGeoref.bottomLeftGp, method: vpGeoref.method };
+    const { imageBlob, imageWidth, imageHeight } = await renderGeoPage(doc, vpGeoref);
+    return { imageBlob, imageWidth, imageHeight, topLeft: vpGeoref.topLeftGp, topRight: vpGeoref.topRightGp, bottomLeft: vpGeoref.bottomLeftGp, method: vpGeoref.method };
   }
 
   const auto = await autoDetectGeoref(doc);
@@ -757,7 +776,7 @@ async function parseGeoPdf(file) {
   const { renderCanvas } = await renderFullPage(page, 2000);
   const imageBlob = await new Promise(resolve => renderCanvas.toBlob(resolve, 'image/jpeg', 0.85));
   if (!imageBlob) throw new Error('Failed to render the PDF page to an image.');
-  return { imageBlob, topLeft: null, topRight: null, bottomLeft: null, method: 'manual placement' };
+  return { imageBlob, imageWidth: renderCanvas.width, imageHeight: renderCanvas.height, topLeft: null, topRight: null, bottomLeft: null, method: 'manual placement' };
 }
 
 document.getElementById('addTrailMapBtn').addEventListener('click', () => {
@@ -789,16 +808,15 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
       topRight = [b.getNorth(), b.getEast()];
       bottomLeft = [b.getSouth(), b.getWest()];
     }
-    let points, imageWidth, imageHeight;
-    if (result.refs && result.refs.length >= 3) {
-      // Real landmarks the auto-detector found printed on the map — drag
-      // these directly onto their true position instead of blank corners.
-      points = result.refs.slice(0, 4).map(r => ({ px: r.px, py: r.py, lat: r.lat, lon: r.lon, name: r.name }));
-      imageWidth = result.imageWidth; imageHeight = result.imageHeight;
-    } else {
-      points = cornerFallbackPoints(topLeft, topRight, bottomLeft);
-      imageWidth = 1; imageHeight = 1;
-    }
+    // Always the same 4 fixed edge points as drag handles, regardless of
+    // which georeferencing method (if any) succeeded — any printed GPS
+    // labels auto-detect found already shaped topLeft/topRight/bottomLeft
+    // above (see autoDetectGeoref) and are just named in the status line,
+    // not used as handle positions, so the interaction is consistent
+    // across files.
+    const imageWidth = result.imageWidth, imageHeight = result.imageHeight;
+    const points = edgeFallbackPoints(topLeft, topRight, bottomLeft, imageWidth, imageHeight);
+    const detectedLabels = (result.refs || []).map(r => r.name);
 
     const url = URL.createObjectURL(result.imageBlob);
     const initialOpacity = Math.max(parseFloat(document.getElementById('trailOpacitySlider').value), 0.7);
@@ -807,12 +825,13 @@ document.getElementById('pdfFileInput').addEventListener('change', async (e) => 
 
     startNudge({
       layer, points, imageWidth, imageHeight,
+      detectionText: describeDetection(result.method, detectedLabels),
       onSave: async ({ topLeft, topRight, bottomLeft, points: finalPoints }) => {
         await dbAddTrailMap({
           id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
           name, imageBlob: result.imageBlob,
           topLeft, topRight, bottomLeft,
-          controlPoints: finalPoints, imageWidth, imageHeight,
+          controlPoints: finalPoints, imageWidth, imageHeight, detectedLabels,
           method: result.method,
           createdAt: Date.now()
         });
@@ -905,41 +924,52 @@ function toggleTrailMap(m, on) {
   }
 }
 
-/* ---------- Nudge: fix three control points {px,py (pixel position within
+/* ---------- Nudge: fix four control points {px,py (pixel position within
    the source image, immutable) -> lat,lon (draggable geo position)} and let
-   the user drag any one while the other two hold still; the whole overlay's
-   placement is recomputed each drag from that 3-point correspondence via
+   the user drag any one while the other three hold still; the whole
+   overlay's placement is recomputed each drag from that correspondence via
    the same affine fit the auto-detector itself uses (fitAffine/applyAffine,
-   defined above). When auto-detect found real printed landmark labels, drag
-   THOSE onto their true spot — much more meaningful than dragging a blank
-   image corner. Used both right after import and later via "Adjust". ---------- */
-function cornerFallbackPoints(topLeft, topRight, bottomLeft) {
-  // No individually-recognizable landmarks to anchor on — fall back to four
-  // points inset from all four edges (not literal corners, which are often
-  // blank margin) in normalized 0..1 image-pixel space. A 4th point also
-  // makes the fit an actual least-squares fit instead of forcing the
-  // transform through exactly 3 points with no way to check itself.
+   defined above). The 4 points are always the same 4 spots (inset from each
+   edge of the image) regardless of how the initial placement was
+   determined — any printed GPS labels the auto-detector found are used only
+   to compute a better initial topLeft/topRight/bottomLeft guess (see
+   autoDetectGeoref) and are named in the status line, not used as drag
+   handle positions. Used both right after import and later via "Adjust". ---------- */
+function edgeFallbackPoints(topLeft, topRight, bottomLeft, imageWidth, imageHeight) {
   const at = (fx, fy) => [
     topLeft[0] + fx * (topRight[0] - topLeft[0]) + fy * (bottomLeft[0] - topLeft[0]),
     topLeft[1] + fx * (topRight[1] - topLeft[1]) + fy * (bottomLeft[1] - topLeft[1])
   ];
-  const pt = (px, py, name) => { const [lat, lon] = at(px, py); return { px, py, lat, lon, name }; };
+  const pt = (fx, fy, name) => {
+    const [lat, lon] = at(fx, fy);
+    return { px: fx * imageWidth, py: fy * imageHeight, lat, lon, name };
+  };
   return [
     pt(0.5, 0.08, 'Top edge'), pt(0.92, 0.5, 'Right edge'),
     pt(0.5, 0.92, 'Bottom edge'), pt(0.08, 0.5, 'Left edge')
   ];
+}
+function describeDetection(method, labels) {
+  if (labels && labels.length > 0) {
+    return `Detected ${labels.length} GPS label${labels.length === 1 ? '' : 's'} in this PDF (${labels.join(', ')}) — used to estimate the initial position.`;
+  }
+  if ((method || '').startsWith('manual placement')) return `No position data found in this PDF — drag the 4 points into place.`;
+  return `Positioned using this PDF's ${method || 'embedded metadata'}.`;
 }
 
 function adjustTrailMap(m) {
   toggleTrailMap(m, true); // make sure it's visible and focused
   const { layer } = activeTrailLayers.get(m.id);
   const original = { topLeft: m.topLeft, topRight: m.topRight, bottomLeft: m.bottomLeft };
-  const hasSavedPoints = m.controlPoints && m.controlPoints.length >= 3;
-  const points = hasSavedPoints ? m.controlPoints.map(p => ({ ...p })) : cornerFallbackPoints(m.topLeft, m.topRight, m.bottomLeft);
-  const imageWidth = hasSavedPoints ? m.imageWidth : 1;
-  const imageHeight = hasSavedPoints ? m.imageHeight : 1;
+
+  const imageWidth = m.imageWidth || 1, imageHeight = m.imageHeight || 1;
+  const points = (m.controlPoints && m.controlPoints.length === 4)
+    ? m.controlPoints.map(p => ({ ...p }))
+    : edgeFallbackPoints(m.topLeft, m.topRight, m.bottomLeft, imageWidth, imageHeight);
+
   startNudge({
     layer, points, imageWidth, imageHeight,
+    detectionText: describeDetection(m.method, m.detectedLabels),
     onSave: async ({ topLeft, topRight, bottomLeft, points: finalPoints }) => {
       await dbAddTrailMap({
         ...m,
@@ -959,20 +989,18 @@ let nudgeState = null; // { layer, markers, onSave, onCancel, wasCapture, getRes
 function nudgePointIcon() { return L.divIcon({ className: 'nudge-handle', iconSize: [22, 22] }); }
 function nudgeCenterIcon() { return L.divIcon({ className: 'nudge-handle-center', html: '&#10021;', iconSize: [34, 34] }); }
 function ptsCentroid(pts) { return L.latLng(pts.reduce((s, p) => s + p.lat, 0) / pts.length, pts.reduce((s, p) => s + p.lon, 0) / pts.length); }
-function startNudge({ layer, points, imageWidth, imageHeight, onSave, onCancel }) {
+function startNudge({ layer, points, imageWidth, imageHeight, detectionText, onSave, onCancel }) {
   if (nudgeState) return; // one nudge session at a time
   if (!points || points.length < 3) throw new Error('startNudge needs at least 3 control points.');
 
   const wasCapture = !capturePanel.classList.contains('hidden');
   capturePanel.classList.add('hidden');
   regionListOverlay.classList.add('hidden');
-  // Keep the opacity slider available (lifted above the nudge panel so they
-  // don't overlap) — seeing the base map through the overlay is how you
-  // actually line up landmarks while dragging the points.
-  const opacityBar = document.getElementById('trailOpacityBar');
-  opacityBar.style.display = 'flex';
-  opacityBar.style.bottom = '90px';
-  document.getElementById('trailOpacitySlider').value = layer.options.opacity ?? 0.85;
+  // Keep the opacity slider available — seeing the base map through the
+  // overlay is how you actually line up landmarks while dragging the points.
+  document.getElementById('trailOpacityBar').style.display = 'flex';
+  setTrailOpacityValue(layer.options.opacity ?? 0.85);
+  document.getElementById('nudgeDetectionStatus').textContent = detectionText || '';
   document.getElementById('nudgePanel').classList.remove('hidden');
 
   const pts = points.map(p => ({ ...p })); // px,py stay fixed; lat,lon are what dragging changes
@@ -1031,7 +1059,6 @@ function startNudge({ layer, points, imageWidth, imageHeight, onSave, onCancel }
 }
 function endNudgeUI() {
   if (!nudgeState) return;
-  document.getElementById('trailOpacityBar').style.bottom = ''; // revert to CSS default; visibility recalculated by setMode() below
   // Tolerate a handle failing to remove cleanly — losing the save because
   // Leaflet's own marker-drag cleanup hiccuped would be much worse than a
   // stray leftover handle. Fall back to yanking its DOM node directly so a

@@ -53,29 +53,38 @@ order, to figure out where it belongs on the real map:
 2. **Auto-detected printed coordinates** — many park/trail brochures print a
    "GPS Coordinates" list (`Trailhead Name: lat, lon`) somewhere on the page.
    The app finds each named label's position on the map page itself and fits
-   a transform from those points.
+   a transform from those points to get a good initial placement.
 3. **Manual placement** — neither of the above panned out. The page is still
    rendered and dropped onto whatever the map is currently showing, ready for
    you to position by hand.
 
-Whichever method ran, you always get a chance to confirm or correct the
-placement before it's saved. Two kinds of handles appear on the map:
+Whichever method ran, you always get exactly the same positioning
+experience: a status line names what was actually detected (e.g. "Detected
+3 GPS labels in this PDF (Castleridge Trailhead, Foothill Staging Area,
+Tyler Ranch Staging Area) — used to estimate the initial position"), and the
+same two kinds of handles appear on the map every time, regardless of what
+the file provided:
 
-- **Three or four small points**, each tied to a fixed pixel position on the
-  source image. Drag any single one onto its true location — the others stay
-  put, and the whole overlay reshapes (via an affine fit) to match. When
-  printed coordinate labels were found, those points *are* the labels (up to
-  4 of them, e.g. "Castleridge Trailhead") — drag the actual landmark onto
-  its real position rather than nudging a blank image corner. Otherwise the
-  points default to spots inset from all four edges of the image. A 4th
-  point also turns the fit into a genuine least-squares fit instead of one
-  forced exactly through 3 points with no way to check itself.
+- **Four small points, always at the same four spots** — one inset from
+  each edge of the image. Drag any single one onto its true location — the
+  others stay put, and the whole overlay reshapes (via an affine fit) to
+  match. Any printed GPS labels auto-detect found are used only to compute a
+  better *starting* position (and are named in the status line) — they're
+  never used as the points' positions, so the interaction is identical
+  whether a file has perfect embedded metadata, three printed landmark
+  labels, or nothing at all. Using 4 points (rather than the minimum 3) also
+  turns the fit into a genuine least-squares fit instead of one forced
+  exactly through 3 points with no way to check itself — which means
+  dragging one point can visibly nudge the others slightly too; that's the
+  fit distributing its error, not a bug.
 - **One large center handle** — drag it to slide the whole overlay as-is
   (pure translation, no reshaping). Use this first for a rough position, then
   the small points to fix any remaining rotation, scale, or skew.
 
-The opacity slider stays available throughout so you can see the base map
-through the overlay while lining things up.
+The opacity slider (vertical, right edge of the screen) stays available
+throughout, on every tab, whenever a trail map is on the map — not just
+while positioning it — so you can see the base map through the overlay
+while lining things up or just browsing.
 
 Already-saved trail maps can be repositioned any time via **Adjust** in the
 Offline tab's trail map list — it reuses whichever points you dragged last,
@@ -94,9 +103,9 @@ over from the image's edges.
 - PDF parsing and rendering runs entirely on-device via
   [MuPDF's WebAssembly build](https://mupdf.com/) (`vendor/mupdf.js`,
   `vendor/mupdf-wasm.*`) — the PDF never leaves the phone. The rendered page
-  image and its georeferencing (corner coordinates, and the three or four
-  control points used for re-adjustment) are stored in IndexedDB as an
-  ordinary trail map record; the overlay itself is drawn with a vendored
+  image and its georeferencing (corner coordinates, and the four control
+  points used for re-adjustment) are stored in IndexedDB as an ordinary
+  trail map record; the overlay itself is drawn with a vendored
   `Leaflet.ImageOverlay.Rotated` (`vendor/Leaflet.ImageOverlay.Rotated.js`),
   which supports the skew/rotation a plain image overlay can't.
 
@@ -150,10 +159,11 @@ Service Worker registration entirely.)
   (~1 m precision) — though actual GPS accuracy is usually only ~5–10 m.
 - Trail map auto-placement is a best-effort guess, not a guarantee — printed
   "GPS Coordinates" labels can be ambiguous to match on the page, and even a
-  clean match only pins the *label's* position, not necessarily the actual
-  trailhead/landmark it names. Always eyeball the positioning step before
-  saving, and use **Adjust** later if it turns out to be off.
-- With 4 positioning points the fit is least-squares, not exact — dragging
-  one point can visibly nudge the other three slightly too, since the
-  transform is doing its best to satisfy all 4 at once. With exactly 3
-  points the fit is always exact and the others never move on their own.
+  clean match only pins where the *label text* sits, not necessarily the
+  actual trailhead/landmark it names, so the initial placement computed from
+  it can be off by a meaningful amount. Always eyeball the positioning step
+  before saving, and use **Adjust** later if it turns out to be off.
+- With always 4 positioning points the fit is least-squares, not exact —
+  dragging one point can visibly nudge the other three slightly too, since
+  the transform is doing its best to satisfy all 4 at once rather than
+  passing through each one exactly.
