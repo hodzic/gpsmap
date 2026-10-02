@@ -2,7 +2,7 @@
   "id": "/gpsmap/",
   "name": "My Location",
   "short_name": "My Location",
-  "start_url": "./index.html",
+  "start_url": "/gpsmap/",
   "scope": "/gpsmap/",
   "display": "standalone",
   "background_color": "#121212",
