@@ -1,4 +1,4 @@
-const SHELL_CACHE = 'my-location-shell-v6';
+const SHELL_CACHE = 'my-location-shell-v7';
 const TILE_CACHE = 'map-tiles';
 const SHELL_ASSETS = [
   './', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
