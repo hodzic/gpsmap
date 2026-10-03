@@ -11,10 +11,14 @@ self.addEventListener('install', event => {
   self.skipWaiting();
 });
 
+// hodzic.github.io hosts several apps on one origin, and they all share Cache
+// Storage. Only delete this app's own old shell caches, never other apps' caches.
+const isOldShell = k => k.startsWith('my-location-shell-') && k !== SHELL_CACHE;
+
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(keys => Promise.all(
-      keys.filter(k => k !== SHELL_CACHE && k !== TILE_CACHE).map(k => caches.delete(k))
+      keys.filter(isOldShell).map(k => caches.delete(k))
     ))
   );
   self.clients.claim();
